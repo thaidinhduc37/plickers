@@ -1,0 +1,47 @@
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from typing import List
+
+from app.core.database import get_db
+from app.core.security import get_current_user
+from app.schemas.schemas import QuestionBankCreate, QuestionBankOut, QuestionCreate, QuestionOut
+from app.services import bank_service
+
+router = APIRouter(prefix="/api/banks", tags=["QuestionBank"])
+auth = Depends(get_current_user)
+
+@router.post("/", response_model=QuestionBankOut)
+def create_bank(data: QuestionBankCreate, db: Session = Depends(get_db), _=auth):
+    return bank_service.create_bank(db, data)
+
+@router.get("", response_model=List[QuestionBankOut])
+@router.get("/", response_model=List[QuestionBankOut])
+def list_banks(db: Session = Depends(get_db), _=auth):
+    return bank_service.list_banks(db)
+
+@router.get("/{bank_id}", response_model=QuestionBankOut)
+def get_bank(bank_id: int, db: Session = Depends(get_db), _=auth):
+    return bank_service.get_bank(db, bank_id)
+
+@router.delete("/{bank_id}")
+def delete_bank(bank_id: int, db: Session = Depends(get_db), _=auth):
+    bank_service.delete_bank(db, bank_id)
+    return {"status": "ok"}
+
+@router.post("/{bank_id}/questions", response_model=QuestionOut)
+def add_question(bank_id: int, data: QuestionCreate, db: Session = Depends(get_db), _=auth):
+    return bank_service.add_question(db, bank_id, data)
+
+@router.post("/{bank_id}/questions/bulk", response_model=List[QuestionOut])
+def bulk_add_questions(bank_id: int, questions: List[QuestionCreate], db: Session = Depends(get_db), _=auth):
+    return bank_service.bulk_add_questions(db, bank_id, questions)
+
+@router.patch("/{bank_id}/questions/{question_id}", response_model=QuestionOut)
+def update_question(bank_id: int, question_id: int, data: dict, db: Session = Depends(get_db), _=auth):
+    return bank_service.update_question(db, bank_id, question_id, data)
+
+@router.delete("/{bank_id}/questions/{question_id}")
+def delete_question(bank_id: int, question_id: int, db: Session = Depends(get_db), _=auth):
+    bank_service.delete_question(db, bank_id, question_id)
+    return {"status": "ok"}
+
