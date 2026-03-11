@@ -13,3 +13,4 @@ qrcode[pil]==7.4.2
 reportlab==4.1.0
 Pillow==10.3.0
 aiofiles==23.2.1
+numpy==1.26.4

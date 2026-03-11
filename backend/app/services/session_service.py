@@ -278,7 +278,7 @@ def next_question(db: DBSession) -> dict:
     if session.state != SessionState.revealed:
         raise HTTPException(status_code=400, detail="Phải reveal đáp án trước khi sang câu tiếp")
 
-    total = len(session.contest.questions)
+    total = len(session.contest.bank.questions) if session.contest.bank else 0
     next_index = session.current_question_index + 1
 
     if next_index >= total:

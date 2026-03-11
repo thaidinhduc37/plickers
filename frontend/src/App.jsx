@@ -8,6 +8,7 @@ import LiveView from './pages/LiveView';
 import MobileScan from './pages/MobileScan';
 import ScannerPage from './pages/ScannerPage';
 import Dashboard from './pages/Dashboard';
+import PresentationScreen from './pages/PresentationScreen';
 
 function App() {
   return (
@@ -29,6 +30,7 @@ function App() {
                 <Route path="/library" element={<Library />} />
                 <Route path="/events" element={<Events />} />
                 <Route path="/live" element={<LiveView />} />
+                <Route path="/presentation" element={<PresentationScreen />} />
                 <Route path="/reports" element={
                   <div className="p-8">
                     <h1 className="text-2xl font-bold text-slate-800 mb-2">Báo cáo</h1>

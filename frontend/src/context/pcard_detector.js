@@ -1,427 +1,530 @@
 ﻿/**
- * pcard_detector.js â€” v3
- * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- * PCARD Detector â€” nháº­n diá»‡n tháº» PCARD 9Ã—9 trong frame camera.
- *
- * Bugs fixed v2â†’v3:
- *   1. fillRatio sai: BFS sample STEP px â†’ count thá»±c < area/STEPÂ²
- *      Fix: nhÃ¢n count * STEPÂ² trÆ°á»›c khi so sÃ¡nh vá»›i area
- *   2. Box blur trÆ°á»›c BFS Ä‘á»ƒ ná»‘i cÃ¡c Ã´ Ä‘en rá»i ráº¡c thÃ nh 1 blob
- *   3. Multi-point cell sampling (5 Ä‘iá»ƒm, Ä‘a sá»‘)
- *   4. Fallback: thá»­ decode tháº³ng vÃ¹ng scan zone nhiá»u tá»‰ lá»‡ crop
- *   5. Adaptive threshold (Otsu) thay vÃ¬ cá»©ng 128
- *   6. Downsample cho tá»‘c Ä‘á»™ xá»­ lÃ½
- *  5. TÃ¬m orientation corner (2x2 tráº¯ng) â†’ xÃ¡c Ä‘á»‹nh hÆ°á»›ng
- *  6. Decode card_id tá»« 8 data bits
- *
- * KhÃ´ng cáº§n thÆ° viá»‡n ngoÃ i â€” cháº¡y thuáº§n canvas API.
- * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+ * pcard_detector.js — PCARD v8 · High-Speed Wide-Angle Edition
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Cải tiến so với v7:
+ *  1. LOCAL adaptive threshold (thay Otsu toàn ảnh) — chịu được nền không đồng đều
+ *  2. Perspective correction — warp thẻ nghiêng về vuông trước khi decode
+ *  3. MIN_VOTES = 1 — 1 frame rõ là đủ khi lia nhanh (v7: 2)
+ *  4. ASPECT filter nới rộng 0.45–2.2 — bắt thẻ nghiêng 40°+
+ *  5. BLOB_MIN_AREA_PCT = 0.25 — bắt thẻ nhỏ/xa hơn (v7: 1.0)
+ *  6. Fallback thông minh: multi-scale blob retry, bỏ brute-force sliding window
+ *  7. getLastBlobRects() — overlay API cho ScannerPage vẽ highlight
  */
+"use strict";
 
-// â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const GRID = 9;
-const WARP_SIZE = 270; // internal warp resolution (30px/cell)
-const CELL_PX = WARP_SIZE / GRID; // 30px
-
-// DATA_POSITIONS — khớp CHÍNH XÁC với backend card_service.py
-// 8 positions: bits 0-5 (top row) + bits 6-7 (right col)
-// bits[0..6] = 7 data bits (MSB first)
-// bits[7]    = even parity
-const DATA_POSITIONS = [
-  [0, 3],
-  [0, 4],
-  [0, 5],
-  [0, 6],
-  [0, 7],
-  [0, 8], // bits 0-5
-  [1, 8],
-  [2, 8], // bits 6-7
-];
-
-// Orientation corner cells (luÃ´n TRáº®NG khi Ä‘Ãºng hÆ°á»›ng)
+// ─── Card constants (khớp card_service.py) ────────────────────────────────────
+const GRID = 7;
 const ORIENTATION_CELLS = [
-  [0, 0],
-  [0, 1],
-  [1, 0],
   [1, 1],
+  [1, 2],
+  [2, 1],
+  [2, 2],
 ];
-
-// Answer mapping: k rotations CW applied during normalize â†’ original orientation
-// Matches backend: k=0: A | k=1: B | k=2: C | k=3: D
+const BORDER_GUARDS = [
+  [1, 3],
+  [2, 3],
+  [2, 4],
+  [3, 1],
+  [3, 2],
+  [3, 3],
+  [3, 4],
+  [3, 5],
+  [4, 2],
+  [4, 3],
+  [4, 5],
+  [5, 3],
+  [5, 4],
+];
+const DATA_POSITIONS = [
+  [1, 4],
+  [1, 5],
+  [2, 5],
+  [4, 1],
+  [5, 1],
+  [5, 2],
+  [4, 4],
+  [5, 5],
+];
 const ANSWER_MAP = ["A", "B", "C", "D"];
 
-// â”€â”€ Otsu threshold â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function otsuThreshold(gray, n) {
-  const hist = new Int32Array(256);
-  for (let i = 0; i < n; i++) hist[gray[i]]++;
-  let sum = 0;
-  for (let i = 0; i < 256; i++) sum += i * hist[i];
-  let sumB = 0,
-    wB = 0,
-    varMax = 0,
-    thresh = 128;
-  for (let t = 0; t < 256; t++) {
-    wB += hist[t];
-    if (!wB) continue;
-    const wF = n - wB;
-    if (!wF) break;
-    sumB += t * hist[t];
-    const mB = sumB / wB;
-    const mF = (sum - sumB) / wF;
-    const v = wB * wF * (mB - mF) ** 2;
-    if (v > varMax) {
-      varMax = v;
-      thresh = t;
-    }
-  }
-  return thresh;
+// ─── Tuning ────────────────────────────────────────────────────────────────────
+const CONFIDENCE_MIN = 0.55; // cao hơn v7 (0.40) để giảm false positive
+const MAX_BLOBS = 30; // tăng từ 20 để bắt nhiều thẻ hơn
+const BLOB_MIN_AREA_PCT = 0.25; // hạ từ 1.0 để bắt thẻ nhỏ/xa
+const BLOB_MIN_PX = 28; // tối thiểu 28×28 px sau downsample
+const ASPECT_MIN = 0.45; // nới từ 0.65 — bắt thẻ nghiêng 40°+
+const ASPECT_MAX = 2.2; // nới từ 1.5
+const CELL_SAMPLE_R = 2; // 5×5 majority vote / cell
+const TARGET_W = 640;
+
+// ─── Temporal buffer ──────────────────────────────────────────────────────────
+const BUFFER_WINDOW_MS = 1500; // giảm từ 2500ms — phản hồi nhanh hơn
+const MIN_VOTES = 1; // 1 frame rõ là đủ (v7: 2)
+
+// ─── Decode helpers ───────────────────────────────────────────────────────────
+function bitsToCardId(bits) {
+  if (bits.length !== 8) return -1;
+  const parityOk = bits.slice(0, 7).reduce((s, b) => s + b, 0) % 2 === bits[7];
+  if (!parityOk) return -1;
+  let val = 0;
+  for (let i = 0; i < 7; i++) val |= bits[i] << (6 - i);
+  return val >= 1 && val <= 100 ? val : -1;
 }
 
-// â”€â”€ Downsample RGBA â†’ grayscale at 1/factor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function downsampleGray(rgba, sw, sh, factor) {
-  const dw = Math.floor(sw / factor);
-  const dh = Math.floor(sh / factor);
-  const gray = new Uint8Array(dw * dh);
-  for (let dy = 0; dy < dh; dy++) {
-    for (let dx = 0; dx < dw; dx++) {
-      const j = (dy * factor * sw + dx * factor) * 4;
-      gray[dy * dw + dx] =
-        (rgba[j] * 299 + rgba[j + 1] * 587 + rgba[j + 2] * 114) / 1000;
-    }
-  }
-  return { gray, dw, dh };
-}
-
-// â”€â”€ Box blur (x then y pass) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function boxBlur(gray, w, h, r) {
-  const tmp = new Float32Array(w * h);
-  const out = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    let s = 0,
-      cnt = 0;
-    for (let x = -r; x < w; x++) {
-      if (x + r < w) {
-        s += gray[y * w + x + r];
-        cnt++;
-      }
-      if (x - r - 1 >= 0) {
-        s -= gray[y * w + x - r - 1];
-        cnt--;
-      }
-      if (x >= 0) tmp[y * w + x] = s / cnt;
-    }
-  }
-  for (let x = 0; x < w; x++) {
-    let s = 0,
-      cnt = 0;
-    for (let y = -r; y < h; y++) {
-      if (y + r < h) {
-        s += tmp[(y + r) * w + x];
-        cnt++;
-      }
-      if (y - r - 1 >= 0) {
-        s -= tmp[(y - r - 1) * w + x];
-        cnt--;
-      }
-      if (y >= 0) out[y * w + x] = Math.round(s / cnt);
-    }
-  }
-  return out;
-}
-
-// â”€â”€ Rotate 9Ã—9 grid 90Â° CW â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function rotateGridCW(g) {
-  const n = g.length;
-  const r = Array.from({ length: n }, () => new Array(n).fill(0));
-  for (let i = 0; i < n; i++)
-    for (let j = 0; j < n; j++) r[j][n - 1 - i] = g[i][j];
+function rot90CW(g) {
+  const n = GRID,
+    r = Array.from({ length: n }, () => new Uint8Array(n));
+  for (let row = 0; row < n; row++)
+    for (let col = 0; col < n; col++) r[col][n - 1 - row] = g[row][col];
   return r;
 }
 
-// â”€â”€ bits â†’ card_id (matches backend bits_to_card_id) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function bitsToCardId(bits) {
-  if (bits.length !== 8) return -1;
-  const data = bits.slice(0, 7);
-  const parity = bits[7];
-  if (data.reduce((a, b) => a + b, 0) % 2 !== parity) return -1;
-  let val = 0;
-  for (const b of data) val = (val << 1) | b;
-  return val >= 1 ? val : -1;
+function rotateK(g, k) {
+  let r = g;
+  for (let i = 0; i < k % 4; i++) r = rot90CW(r);
+  return r;
 }
 
-// â”€â”€ Decode grid: try 4 rotations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function decodeGrid(grid) {
-  // Center finder must be white (rotation-invariant check)
-  if (grid[4][4] !== 0) return null;
-
-  // Overall grid must be mostly dark — PCARD starts all-black with few white cuts
-  let darkCount = 0;
-  for (let r = 0; r < GRID; r++)
-    for (let c = 0; c < GRID; c++) darkCount += grid[r][c];
-  if (darkCount < 52) return null; // < 52/81 (~64%) dark → not a PCARD
-
-  let cur = grid;
-  for (let k = 0; k < 4; k++) {
-    const tlOk = ORIENTATION_CELLS.every(([r, c]) => cur[r][c] === 0);
-    if (tlOk) {
-      // Cells immediately outside the 2×2 corner must be dark
-      // [0,2],[1,2] = right edge; [2,0],[2,1] = bottom edge
-      const borderOk =
-        cur[0][2] === 1 &&
-        cur[1][2] === 1 &&
-        cur[2][0] === 1 &&
-        cur[2][1] === 1;
-      if (borderOk) {
-        const bits = DATA_POSITIONS.map(([r, c]) => cur[r][c]);
-        const cardId = bitsToCardId(bits);
-        if (cardId > 0) return { cardId, answer: ANSWER_MAP[k] };
-      }
-    }
-    cur = rotateGridCW(cur);
+function calcConfidence(rot) {
+  const fixedWhite = ORIENTATION_CELLS;
+  const fixedBlack = [...BORDER_GUARDS];
+  for (let i = 0; i < GRID; i++) {
+    fixedBlack.push([0, i], [6, i]);
+    if (i > 0 && i < 6) fixedBlack.push([i, 0], [i, 6]);
   }
-  return null;
+  let ok = 0;
+  const total = fixedWhite.length + fixedBlack.length;
+  for (const [r, c] of fixedWhite) if (rot[r][c] === 0) ok++;
+  for (const [r, c] of fixedBlack) if (rot[r][c] === 1) ok++;
+  return ok / total;
 }
 
-// â”€â”€ Read 9Ã—9 grid from raw RGBA data region â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function readGridFromRGBA(data, imgW, imgH, x0, y0, size) {
-  const cw = size / GRID;
-  const ch = size / GRID;
-  const grid = [];
-  for (let r = 0; r < GRID; r++) {
-    grid[r] = [];
-    for (let c = 0; c < GRID; c++) {
-      const samples = [
-        [x0 + (c + 0.5) * cw, y0 + (r + 0.5) * ch],
-        [x0 + (c + 0.25) * cw, y0 + (r + 0.25) * ch],
-        [x0 + (c + 0.75) * cw, y0 + (r + 0.25) * ch],
-        [x0 + (c + 0.25) * cw, y0 + (r + 0.75) * ch],
-        [x0 + (c + 0.75) * cw, y0 + (r + 0.75) * ch],
-      ];
-      let dark = 0;
-      for (const [px, py] of samples) {
-        const xi = Math.max(0, Math.min(imgW - 1, Math.round(px)));
-        const yi = Math.max(0, Math.min(imgH - 1, Math.round(py)));
-        const idx = (yi * imgW + xi) * 4;
-        const br =
-          (data[idx] * 299 + data[idx + 1] * 587 + data[idx + 2] * 114) / 1000;
-        if (br < 128) dark++;
+// ─── Step 1: Adaptive local threshold (thay Otsu toàn ảnh) ───────────────────
+/**
+ * Dùng integral image để tính mean vùng 48×48 xung quanh mỗi pixel.
+ * Pixel đen nếu giá trị < mean - OFFSET.
+ * Chịu được nền không đồng đều (bàn gỗ, bóng người, đèn không đều).
+ */
+function binarize(imageData, width, height) {
+  const S = Math.max(1, Math.floor(width / TARGET_W));
+  const sw = Math.floor(width / S);
+  const sh = Math.floor(height / S);
+  const d = imageData.data;
+
+  // Grayscale downsample
+  const gray = new Uint8Array(sw * sh);
+  for (let y = 0; y < sh; y++)
+    for (let x = 0; x < sw; x++) {
+      let sum = 0,
+        cnt = 0;
+      for (let dy = 0; dy < S && y * S + dy < height; dy++)
+        for (let dx = 0; dx < S && x * S + dx < width; dx++) {
+          const i = ((y * S + dy) * width + (x * S + dx)) * 4;
+          sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          cnt++;
+        }
+      gray[y * sw + x] = cnt ? Math.round(sum / cnt) : 255;
+    }
+
+  // Integral image
+  const integral = new Float64Array((sw + 1) * (sh + 1));
+  for (let y = 0; y < sh; y++)
+    for (let x = 0; x < sw; x++)
+      integral[(y + 1) * (sw + 1) + (x + 1)] =
+        gray[y * sw + x] +
+        integral[y * (sw + 1) + (x + 1)] +
+        integral[(y + 1) * (sw + 1) + x] -
+        integral[y * (sw + 1) + x];
+
+  // Adaptive threshold: so với mean vùng HALF*2 xung quanh, offset -8
+  const HALF = 24,
+    OFFSET = 8;
+  const binary = new Uint8Array(sw * sh);
+  for (let y = 0; y < sh; y++) {
+    for (let x = 0; x < sw; x++) {
+      const x0 = Math.max(0, x - HALF),
+        y0 = Math.max(0, y - HALF);
+      const x1 = Math.min(sw - 1, x + HALF),
+        y1 = Math.min(sh - 1, y + HALF);
+      const area = (x1 - x0 + 1) * (y1 - y0 + 1);
+      const sum =
+        integral[(y1 + 1) * (sw + 1) + (x1 + 1)] -
+        integral[y0 * (sw + 1) + (x1 + 1)] -
+        integral[(y1 + 1) * (sw + 1) + x0] +
+        integral[y0 * (sw + 1) + x0];
+      binary[y * sw + x] = gray[y * sw + x] < sum / area - OFFSET ? 1 : 0;
+    }
+  }
+
+  return { binary, sw, sh };
+}
+
+// ─── Step 2: BFS blob detection ───────────────────────────────────────────────
+function detectContours(binary, sw, sh, minAreaPct = BLOB_MIN_AREA_PCT) {
+  const minArea = Math.max(
+    BLOB_MIN_PX * BLOB_MIN_PX,
+    Math.ceil((sw * sh * minAreaPct) / 100),
+  );
+  const visited = new Uint8Array(sw * sh);
+  const blobs = [];
+
+  for (let sy = 0; sy < sh; sy++) {
+    for (let sx = 0; sx < sw; sx++) {
+      if (!binary[sy * sw + sx] || visited[sy * sw + sx]) continue;
+      const queue = [sy * sw + sx];
+      visited[sy * sw + sx] = 1;
+      let head = 0;
+      let minX = sx,
+        maxX = sx,
+        minY = sy,
+        maxY = sy,
+        area = 0;
+
+      while (head < queue.length) {
+        const p = queue[head++];
+        const px = p % sw,
+          py = (p - px) / sw;
+        area++;
+        if (px < minX) minX = px;
+        if (px > maxX) maxX = px;
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
+
+        if (px > 0) {
+          const np = p - 1;
+          if (!visited[np] && binary[np]) {
+            visited[np] = 1;
+            queue.push(np);
+          }
+        }
+        if (px < sw - 1) {
+          const np = p + 1;
+          if (!visited[np] && binary[np]) {
+            visited[np] = 1;
+            queue.push(np);
+          }
+        }
+        if (py > 0) {
+          const np = p - sw;
+          if (!visited[np] && binary[np]) {
+            visited[np] = 1;
+            queue.push(np);
+          }
+        }
+        if (py < sh - 1) {
+          const np = p + sw;
+          if (!visited[np] && binary[np]) {
+            visited[np] = 1;
+            queue.push(np);
+          }
+        }
       }
-      grid[r][c] = dark >= 3 ? 1 : 0;
+
+      if (area >= minArea) blobs.push({ minX, maxX, minY, maxY, area });
+    }
+  }
+
+  blobs.sort((a, b) => b.area - a.area);
+  return blobs.slice(0, MAX_BLOBS);
+}
+
+function filterSquareContours(blobs) {
+  return blobs.filter((b) => {
+    const asp = (b.maxX - b.minX + 1) / (b.maxY - b.minY + 1);
+    return asp >= ASPECT_MIN && asp <= ASPECT_MAX;
+  });
+}
+
+// ─── Step 3a: Sample grid thẳng ───────────────────────────────────────────────
+function sampleGrid(binary, sw, sh, blob) {
+  const { minX, maxX, minY, maxY } = blob;
+  const bw = maxX - minX + 1,
+    bh = maxY - minY + 1;
+  if (bw < GRID * 3 || bh < GRID * 3) return null;
+  const cw = bw / GRID,
+    ch = bh / GRID;
+  const R = CELL_SAMPLE_R;
+  const grid = Array.from({ length: GRID }, () => new Uint8Array(GRID));
+  for (let gr = 0; gr < GRID; gr++) {
+    for (let gc = 0; gc < GRID; gc++) {
+      const cx = Math.round(minX + (gc + 0.5) * cw);
+      const cy = Math.round(minY + (gr + 0.5) * ch);
+      let dark = 0,
+        total = 0;
+      for (let dy = -R; dy <= R; dy++)
+        for (let dx = -R; dx <= R; dx++) {
+          const nx = cx + dx,
+            ny = cy + dy;
+          if (nx >= 0 && nx < sw && ny >= 0 && ny < sh) {
+            dark += binary[ny * sw + nx];
+            total++;
+          }
+        }
+      grid[gr][gc] = total > 0 && dark / total >= 0.45 ? 1 : 0;
     }
   }
   return grid;
 }
 
-// â”€â”€ Bilinear warp (quad â†’ WARP_SIZE square) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function warpQuadToCanvas(srcData, srcW, srcH, quad, dstCtx) {
-  const [p0, p1, p2, p3] = quad;
-  const dst = dstCtx.createImageData(WARP_SIZE, WARP_SIZE);
-  for (let dy = 0; dy < WARP_SIZE; dy++) {
-    const ty = dy / (WARP_SIZE - 1);
-    for (let dx = 0; dx < WARP_SIZE; dx++) {
-      const tx = dx / (WARP_SIZE - 1);
-      const sx =
-        (1 - ty) * ((1 - tx) * p0[0] + tx * p1[0]) +
-        ty * ((1 - tx) * p3[0] + tx * p2[0]);
-      const sy =
-        (1 - ty) * ((1 - tx) * p0[1] + tx * p1[1]) +
-        ty * ((1 - tx) * p3[1] + tx * p2[1]);
-      const xi = Math.max(0, Math.min(srcW - 1, Math.round(sx)));
-      const yi = Math.max(0, Math.min(srcH - 1, Math.round(sy)));
-      const si = (yi * srcW + xi) * 4,
-        di = (dy * WARP_SIZE + dx) * 4;
-      dst.data[di] = srcData[si];
-      dst.data[di + 1] = srcData[si + 1];
-      dst.data[di + 2] = srcData[si + 2];
-      dst.data[di + 3] = 255;
+// ─── Step 3b: Perspective-corrected sample ────────────────────────────────────
+/**
+ * Tìm 4 góc bằng cực trị x+y / x-y trong vùng blob.
+ * Warp về lưới (GRID*8)×(GRID*8) bằng bilinear interpolation.
+ * Rồi sample GRID×GRID từ ảnh warped.
+ * → Xử lý thẻ nghiêng lên đến ~45°.
+ */
+function sampleGridWarped(binary, sw, sh, blob) {
+  const { minX, maxX, minY, maxY } = blob;
+  if (maxX - minX + 1 < GRID * 3 || maxY - minY + 1 < GRID * 3) return null;
+
+  let tlV = Infinity,
+    tlP = null;
+  let trV = -Infinity,
+    trP = null;
+  let brV = -Infinity,
+    brP = null;
+  let blV = Infinity,
+    blP = null;
+
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      if (!binary[y * sw + x]) continue;
+      const s = x + y,
+        dv = x - y;
+      if (s < tlV) {
+        tlV = s;
+        tlP = { x, y };
+      }
+      if (dv > trV) {
+        trV = dv;
+        trP = { x, y };
+      }
+      if (s > brV) {
+        brV = s;
+        brP = { x, y };
+      }
+      if (dv < blV) {
+        blV = dv;
+        blP = { x, y };
+      }
     }
   }
-  dstCtx.putImageData(dst, 0, 0);
-}
+  if (!tlP || !trP || !brP || !blP) return null;
 
-// â”€â”€ Try decode region defined by a quad â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function tryDecodeQuad(srcData, srcW, srcH, quad, warpCtx) {
-  warpQuadToCanvas(srcData, srcW, srcH, quad, warpCtx);
-  const wd = warpCtx.getImageData(0, 0, WARP_SIZE, WARP_SIZE);
-  const grid = readGridFromRGBA(wd.data, WARP_SIZE, WARP_SIZE, 0, 0, WARP_SIZE);
-  const res = decodeGrid(grid);
-  if (!res) return null;
-  // Confidence: contrast between white cells (orientation corner + finder)
-  // and cells that are guaranteed dark in any valid PCARD (interior non-data cells)
-  const WHITE_SAMPLE = [
-    [0, 0],
-    [0, 1],
-    [1, 0],
-    [1, 1],
-    [4, 4],
-  ];
-  const DARK_SAMPLE = [
-    [2, 2],
-    [3, 3],
-    [5, 5],
-    [6, 6],
-    [2, 6],
-    [6, 2],
-    [3, 5],
-    [5, 3],
-  ];
-  const sampleBr = (cells) => {
-    let s = 0;
-    for (const [r, c] of cells) {
-      const px = Math.round(c * CELL_PX + CELL_PX * 0.5);
-      const py = Math.round(r * CELL_PX + CELL_PX * 0.5);
-      const i = (py * WARP_SIZE + px) * 4;
-      s +=
-        (wd.data[i] * 299 + wd.data[i + 1] * 587 + wd.data[i + 2] * 114) / 1000;
+  const WARP_SZ = GRID * 8; // 56×56
+  const warped = new Uint8Array(WARP_SZ * WARP_SZ);
+
+  for (let wy = 0; wy < WARP_SZ; wy++) {
+    const tv = wy / (WARP_SZ - 1);
+    for (let wx = 0; wx < WARP_SZ; wx++) {
+      const tu = wx / (WARP_SZ - 1);
+      const sx = Math.round(
+        (1 - tu) * (1 - tv) * tlP.x +
+          tu * (1 - tv) * trP.x +
+          (1 - tu) * tv * blP.x +
+          tu * tv * brP.x,
+      );
+      const sy = Math.round(
+        (1 - tu) * (1 - tv) * tlP.y +
+          tu * (1 - tv) * trP.y +
+          (1 - tu) * tv * blP.y +
+          tu * tv * brP.y,
+      );
+      if (sx >= 0 && sx < sw && sy >= 0 && sy < sh)
+        warped[wy * WARP_SZ + wx] = binary[sy * sw + sx];
     }
-    return s / cells.length;
-  };
-  const contrast = (sampleBr(WHITE_SAMPLE) - sampleBr(DARK_SAMPLE)) / 255;
-  return { ...res, confidence: Math.max(0, Math.min(1.0, contrast)) };
-}
+  }
 
-// â”€â”€ Find square blob candidates (BFS on blurred binary) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function findSquareCandidates(gray, w, h, thresh, minSizePx) {
-  const STEP = 3;
-  const bin = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) bin[i] = gray[i] < thresh ? 1 : 0;
-
-  const visited = new Uint8Array(w * h);
-  const cands = [];
-  const MIN_A = minSizePx * minSizePx * 0.2;
-  const MAX_A = w * h * 0.85;
-  const stack = [];
-
-  for (let sy = 0; sy < h; sy += STEP) {
-    for (let sx = 0; sx < w; sx += STEP) {
-      const i0 = sy * w + sx;
-      if (!bin[i0] || visited[i0]) continue;
-      stack.length = 0;
-      stack.push(i0);
-      visited[i0] = 1;
-      let x0 = sx,
-        x1 = sx,
-        y0 = sy,
-        y1 = sy,
-        cnt = 0;
-      while (stack.length) {
-        const cur = stack.pop(),
-          cx = cur % w,
-          cy = (cur / w) | 0;
-        if (cx < x0) x0 = cx;
-        if (cx > x1) x1 = cx;
-        if (cy < y0) y0 = cy;
-        if (cy > y1) y1 = cy;
-        cnt++;
-        if (cnt > 150000) break;
-        for (const n of [
-          cur - STEP,
-          cur + STEP,
-          cur - w * STEP,
-          cur + w * STEP,
-        ]) {
-          if (n >= 0 && n < bin.length && bin[n] && !visited[n]) {
-            visited[n] = 1;
-            stack.push(n);
+  const cw = WARP_SZ / GRID;
+  const grid = Array.from({ length: GRID }, () => new Uint8Array(GRID));
+  const R = Math.max(1, Math.floor(cw * 0.3));
+  for (let gr = 0; gr < GRID; gr++) {
+    for (let gc = 0; gc < GRID; gc++) {
+      const cx = Math.round((gc + 0.5) * cw),
+        cy = Math.round((gr + 0.5) * cw);
+      let dark = 0,
+        total = 0;
+      for (let dy = -R; dy <= R; dy++)
+        for (let dx = -R; dx <= R; dx++) {
+          const nx = cx + dx,
+            ny = cy + dy;
+          if (nx >= 0 && nx < WARP_SZ && ny >= 0 && ny < WARP_SZ) {
+            dark += warped[ny * WARP_SZ + nx];
+            total++;
           }
         }
-      }
-      const bw = x1 - x0,
-        bh = y1 - y0,
-        area = bw * bh;
-      if (area < MIN_A || area > MAX_A) continue;
-      const ar = bw / bh;
-      if (ar < 0.5 || ar > 2.0) continue;
-      // fillRatio fix: BFS counts at STEP resolution, compensate
-      if ((cnt * STEP * STEP) / area < 0.2) continue;
-      cands.push({ x: x0, y: y0, w: bw, h: bh, area });
+      grid[gr][gc] = total > 0 && dark / total >= 0.45 ? 1 : 0;
     }
   }
-  cands.sort((a, b) => b.area - a.area);
-  return cands.slice(0, 8);
+  return grid;
 }
 
-// â”€â”€ Main Detector Class â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-export class PCardDetector {
-  constructor() {
-    this._warpCanvas = null;
-    this._warpCtx = null;
-    this._init();
+// ─── Step 4: Decode card ──────────────────────────────────────────────────────
+function decodeCard(grid) {
+  if (!grid) return null;
+  for (let i = 0; i < GRID; i++)
+    if (!grid[0][i] || !grid[6][i] || !grid[i][0] || !grid[i][6]) return null;
+  for (let k = 0; k < 4; k++) {
+    const rot = rotateK(grid, k);
+    if (!ORIENTATION_CELLS.every(([r, c]) => rot[r][c] === 0)) continue;
+    if (!BORDER_GUARDS.every(([r, c]) => rot[r][c] === 1)) continue;
+    const bits = DATA_POSITIONS.map(([r, c]) => rot[r][c]);
+    const cardId = bitsToCardId(bits);
+    if (cardId < 1) continue;
+    const confidence = calcConfidence(rot);
+    if (confidence < CONFIDENCE_MIN) continue;
+    return { cardId, answer: ANSWER_MAP[k], confidence, k };
   }
+  return null;
+}
 
-  _init() {
-    if (typeof OffscreenCanvas !== "undefined") {
-      this._warpCanvas = new OffscreenCanvas(WARP_SIZE, WARP_SIZE);
-    } else {
-      this._warpCanvas = document.createElement("canvas");
-      this._warpCanvas.width = WARP_SIZE;
-      this._warpCanvas.height = WARP_SIZE;
-    }
-    this._warpCtx = this._warpCanvas.getContext("2d", {
-      willReadFrequently: true,
+// ─── Step 5: Try straight + warped per blob ───────────────────────────────────
+function tryDecodeBlob(binary, sw, sh, blob) {
+  const r1 = decodeCard(sampleGrid(binary, sw, sh, blob));
+  if (r1) return r1;
+  const r2 = decodeCard(sampleGridWarped(binary, sw, sh, blob));
+  return r2 || null;
+}
+
+// ─── Step 6: Fallback — retry với blob nhỏ hơn ───────────────────────────────
+function fallbackSmallBlob(binary, sw, sh, seenIds) {
+  const blobs = filterSquareContours(detectContours(binary, sw, sh, 0.08));
+  const found = [];
+  for (const blob of blobs) {
+    const r = tryDecodeBlob(binary, sw, sh, blob);
+    if (!r || seenIds.has(r.cardId)) continue;
+    seenIds.add(r.cardId);
+    found.push(r);
+  }
+  return found;
+}
+
+// ─── Main pipeline ─────────────────────────────────────────────────────────────
+function processFrame(imageData, width, height) {
+  const { binary, sw, sh } = binarize(imageData, width, height);
+  const S = Math.max(1, Math.floor(width / TARGET_W)); // scale factor cho overlay
+
+  const blobs = filterSquareContours(detectContours(binary, sw, sh));
+  const seenIds = new Set();
+  const results = [];
+  const blobRects = [];
+
+  for (const blob of blobs) {
+    const r = tryDecodeBlob(binary, sw, sh, blob);
+    if (!r || seenIds.has(r.cardId)) continue;
+    seenIds.add(r.cardId);
+    results.push(r);
+    blobRects.push({
+      cardId: r.cardId,
+      answer: r.answer,
+      confidence: r.confidence,
+      x: blob.minX * S,
+      y: blob.minY * S,
+      w: (blob.maxX - blob.minX + 1) * S,
+      h: (blob.maxY - blob.minY + 1) * S,
     });
   }
 
-  /**
-   * Detect PCARD trong frame.
-   * @param {HTMLCanvasElement} canvas
-   * @param {CanvasRenderingContext2D} ctx
-   * @returns {{ cardId, answer, confidence, bbox } | null}
-   */
-  detect(canvas, ctx) {
-    const W = canvas.width,
-      H = canvas.height;
-    const fullData = ctx.getImageData(0, 0, W, H);
+  if (results.length === 0) {
+    results.push(...fallbackSmallBlob(binary, sw, sh, seenIds));
+  }
 
-    // Downsample for fast blob detection (max ~480px side)
-    const SCALE = Math.max(1, Math.floor(Math.min(W, H) / 480));
-    const { gray: gDS, dw, dh } = downsampleGray(fullData.data, W, H, SCALE);
+  return { results, blobRects };
+}
 
-    // Blur to bridge gaps between black cells
-    const blurR = Math.max(3, Math.round(Math.min(dw, dh) * 0.015));
-    const blurred = boxBlur(gDS, dw, dh, blurR);
+// ─── Public API ────────────────────────────────────────────────────────────────
+class PCardDetector {
+  constructor() {
+    this.GRID = GRID;
+    this.ORIENTATION_CELLS = ORIENTATION_CELLS;
+    this.BORDER_GUARDS = BORDER_GUARDS;
+    this.DATA_POSITIONS = DATA_POSITIONS;
+    this.ANSWER_MAP = ANSWER_MAP;
+    this.CONFIDENCE_MIN = CONFIDENCE_MIN;
+    /** @type {Map<number, Array<{answer:string, confidence:number, ts:number}>>} */
+    this._buffer = new Map();
+    this._lastRects = [];
+  }
 
-    const thresh = otsuThreshold(blurred, dw * dh);
-    const minSizeDS = Math.min(dw, dh) * 0.07;
-    const cands = findSquareCandidates(blurred, dw, dh, thresh, minSizeDS);
-
-    for (const c of cands) {
-      const m = Math.min(c.w, c.h) * 0.05 * SCALE;
-      const fx = c.x * SCALE,
-        fy = c.y * SCALE,
-        fw = c.w * SCALE,
-        fh = c.h * SCALE;
-      const quad = [
-        [fx - m, fy - m],
-        [fx + fw + m, fy - m],
-        [fx + fw + m, fy + fh + m],
-        [fx - m, fy + fh + m],
-      ];
-      const result = tryDecodeQuad(fullData.data, W, H, quad, this._warpCtx);
-      if (result) return { ...result, bbox: { x: fx, y: fy, w: fw, h: fh } };
+  detect(source, ctx) {
+    let imageData;
+    if (source instanceof HTMLVideoElement) {
+      const canvas = ctx.canvas;
+      canvas.width = source.videoWidth;
+      canvas.height = source.videoHeight;
+      ctx.drawImage(source, 0, 0);
+      imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    } else if (source instanceof HTMLCanvasElement) {
+      imageData = ctx.getImageData(0, 0, source.width, source.height);
+    } else {
+      imageData = source;
     }
+    const { results, blobRects } = processFrame(
+      imageData,
+      imageData.width,
+      imageData.height,
+    );
+    this._lastRects = blobRects;
+    for (const r of results)
+      this.updateDetectionBuffer(r.cardId, r.answer, r.confidence);
+    return results;
+  }
 
-    // Fallback: try direct crop of scan zone at multiple scales
-    const sz = Math.min(W, H) * 0.82;
-    const ox0 = (W - sz) / 2,
-      oy0 = (H - sz) / 2;
-    for (const f of [0.9, 0.75, 0.6, 0.45, 0.98]) {
-      const s = sz * f;
-      const ox = ox0 + (sz - s) / 2,
-        oy = oy0 + (sz - s) / 2;
-      const quad = [
-        [ox, oy],
-        [ox + s, oy],
-        [ox + s, oy + s],
-        [ox, oy + s],
-      ];
-      const result = tryDecodeQuad(fullData.data, W, H, quad, this._warpCtx);
-      if (result && result.confidence > 0.6)
-        return { ...result, bbox: { x: ox, y: oy, w: s, h: s } };
+  detectOne(source, ctx) {
+    const results = this.detect(source, ctx);
+    return results.length ? results[0] : null;
+  }
+
+  /** Trả về bounding boxes frame gần nhất để ScannerPage vẽ overlay */
+  getLastBlobRects() {
+    return this._lastRects;
+  }
+
+  updateDetectionBuffer(cardId, answer, confidence) {
+    const now = Date.now();
+    const cutoff = now - BUFFER_WINDOW_MS;
+    let entries = this._buffer.get(cardId);
+    if (!entries) {
+      entries = [];
+      this._buffer.set(cardId, entries);
     }
+    let i = 0;
+    while (i < entries.length && entries[i].ts < cutoff) i++;
+    if (i > 0) entries.splice(0, i);
+    entries.push({ answer, confidence, ts: now });
+  }
 
-    return null;
+  computeStableResults(minVotes = MIN_VOTES, windowMs = BUFFER_WINDOW_MS) {
+    const now = Date.now();
+    const cutoff = now - windowMs;
+    const out = new Map();
+    for (const [cardId, entries] of this._buffer) {
+      const recent = entries.filter((e) => e.ts >= cutoff);
+      if (recent.length < minVotes) continue;
+      const weight = { A: 0, B: 0, C: 0, D: 0 };
+      for (const e of recent) weight[e.answer] += e.confidence;
+      const best = ["A", "B", "C", "D"].reduce((a, b) =>
+        weight[b] > weight[a] ? b : a,
+      );
+      const bestVotes = recent.filter((e) => e.answer === best).length;
+      if (bestVotes < minVotes) continue;
+      const totalW = Object.values(weight).reduce((s, v) => s + v, 0);
+      out.set(cardId, {
+        answer: best,
+        votes: bestVotes,
+        confidence: totalW > 0 ? weight[best] / totalW : 0,
+      });
+    }
+    return out;
+  }
+
+  clearBuffer() {
+    this._buffer.clear();
+  }
+  clearCard(cardId) {
+    this._buffer.delete(cardId);
   }
 }
 
-export default PCardDetector;
+if (typeof module !== "undefined") module.exports = { PCardDetector };
+export { PCardDetector };
