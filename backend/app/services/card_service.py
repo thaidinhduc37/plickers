@@ -62,8 +62,13 @@ LABEL_COLORS = {
 # ══════════════════════════════════════════════════════════════════════════════
 
 def card_id_to_bits(card_id: int) -> List[int]:
-    """Encode card_id (1-100) → 7 data bits + 1 parity bit = 8 bits."""
-    assert 1 <= card_id <= 100, f"card_id phải từ 1–100, nhận: {card_id}"
+    """
+    Encode card_id (1-100) → 7 data bits + 1 parity bit = 8 bits.
+    
+    FIX #12: Thay assert bằng ValueError để không crash service
+    """
+    if not 1 <= card_id <= 100:
+        raise ValueError(f"card_id phải từ 1–100, nhận: {card_id}")
     data_bits = [(card_id >> (6 - i)) & 1 for i in range(7)]
     parity = sum(data_bits) % 2
     return data_bits + [parity]

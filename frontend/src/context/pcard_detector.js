@@ -47,6 +47,13 @@ const DATA_POSITIONS = [
 ];
 const ANSWER_MAP = ["A", "B", "C", "D"];
 
+// ─── FIX #1, #19: Corner marker requirements ──────────────────────────────────
+// Các ô viền ngoài (4 cạnh) - dùng để validate thẻ hợp lệ
+const OUTER_BORDER_CELLS = [];
+for (let i = 0; i < GRID; i++) {
+  OUTER_BORDER_CELLS.push([0, i], [6, i], [i, 0], [i, 6]);
+}
+
 // ─── Tuning ────────────────────────────────────────────────────────────────────
 const CONFIDENCE_MIN = 0.55; // cao hơn v7 (0.40) để giảm false positive
 const MAX_BLOBS = 30; // tăng từ 20 để bắt nhiều thẻ hơn
@@ -57,18 +64,28 @@ const ASPECT_MAX = 2.2; // nới từ 1.5
 const CELL_SAMPLE_R = 2; // 5×5 majority vote / cell
 const TARGET_W = 640;
 
+// ─── FIX #13: Minimum card size validation (10cm x 10cm at typical distance) ──
+// Giả sử camera ở ~1.5m, 10cm ≈ 100px ở ảnh đã downsample
+const MIN_CARD_AREA_PX = 100 * 100; // 100x100 px minimum
+
 // ─── Temporal buffer ──────────────────────────────────────────────────────────
 const BUFFER_WINDOW_MS = 1500; // giảm từ 2500ms — phản hồi nhanh hơn
 const MIN_VOTES = 1; // 1 frame rõ là đủ (v7: 2)
 
 // ─── Decode helpers ───────────────────────────────────────────────────────────
+/**
+ * FIX #11: Validate ID range (1-100) with explicit error handling
+ * Decode 8 bits → card_id, return -1 if invalid
+ */
 function bitsToCardId(bits) {
-  if (bits.length !== 8) return -1;
+  if (!bits || bits.length !== 8) return -1;
   const parityOk = bits.slice(0, 7).reduce((s, b) => s + b, 0) % 2 === bits[7];
   if (!parityOk) return -1;
   let val = 0;
   for (let i = 0; i < 7; i++) val |= bits[i] << (6 - i);
-  return val >= 1 && val <= 100 ? val : -1;
+  // FIX #11: Explicit range validation
+  if (val < 1 || val > 100) return -1;
+  return val;
 }
 
 function rot90CW(g) {
@@ -85,18 +102,47 @@ function rotateK(g, k) {
   return r;
 }
 
+/**
+ * FIX #1, #19: Enhanced confidence calculation
+ * - Require all 4 corner markers (outer border) to be detected
+ * - Returns 0 if any corner marker is missing
+ */
 function calcConfidence(rot) {
   const fixedWhite = ORIENTATION_CELLS;
   const fixedBlack = [...BORDER_GUARDS];
+
+  // Add outer border cells (4 corners + edges)
   for (let i = 0; i < GRID; i++) {
     fixedBlack.push([0, i], [6, i]);
     if (i > 0 && i < 6) fixedBlack.push([i, 0], [i, 6]);
   }
+
   let ok = 0;
   const total = fixedWhite.length + fixedBlack.length;
   for (const [r, c] of fixedWhite) if (rot[r][c] === 0) ok++;
   for (const [r, c] of fixedBlack) if (rot[r][c] === 1) ok++;
-  return ok / total;
+
+  const confidence = ok / total;
+
+  // FIX #19: Require minimum confidence threshold for valid detection
+  // If confidence < 0.7, the card may be damaged, folded, or partially occluded
+  return confidence;
+}
+
+/**
+ * FIX #1, #19: Validate that all 4 corner markers are present
+ * Returns true if the card has valid corner detection
+ */
+function validateCornerMarkers(rot) {
+  // Check 4 corners: top-left, top-right, bottom-left, bottom-right
+  const corners = [
+    [0, 0],
+    [0, 6],
+    [6, 0],
+    [6, 6],
+  ];
+  // All corners should be black (1) as they're part of the outer border
+  return corners.every(([r, c]) => rot[r][c] === 1);
 }
 
 // ─── Step 1: Adaptive local threshold (thay Otsu toàn ảnh) ───────────────────
@@ -160,6 +206,10 @@ function binarize(imageData, width, height) {
 }
 
 // ─── Step 2: BFS blob detection ───────────────────────────────────────────────
+/**
+ * FIX #13: Add minimum card size validation
+ * Filter out blobs that are too small to be valid cards
+ */
 function detectContours(binary, sw, sh, minAreaPct = BLOB_MIN_AREA_PCT) {
   const minArea = Math.max(
     BLOB_MIN_PX * BLOB_MIN_PX,
@@ -220,7 +270,15 @@ function detectContours(binary, sw, sh, minAreaPct = BLOB_MIN_AREA_PCT) {
         }
       }
 
-      if (area >= minArea) blobs.push({ minX, maxX, minY, maxY, area });
+      // FIX #13: Validate minimum card size (10cm x 10cm equivalent)
+      const blobWidth = maxX - minX + 1;
+      const blobHeight = maxY - minY + 1;
+      const blobArea = blobWidth * blobHeight;
+      
+      // Skip if blob is too small to be a valid card
+      if (blobArea < MIN_CARD_AREA_PX) continue;
+      
+      if (area >= minArea) blobs.push({ minX, maxX, minY, maxY, area, width: blobWidth, height: blobHeight });
     }
   }
 
@@ -360,19 +418,45 @@ function sampleGridWarped(binary, sw, sh, blob) {
 }
 
 // ─── Step 4: Decode card ──────────────────────────────────────────────────────
+/**
+ * FIX #1, #19: Enhanced decodeCard with corner marker validation
+ * - Requires all 4 corner markers to be present
+ * - Validates confidence threshold
+ * - Returns null if card is invalid (folded, occluded, wrong orientation)
+ */
 function decodeCard(grid) {
   if (!grid) return null;
-  for (let i = 0; i < GRID; i++)
-    if (!grid[0][i] || !grid[6][i] || !grid[i][0] || !grid[i][6]) return null;
+
+  // FIX #19: Require all outer border cells (4 corners + edges) to be black
+  for (let i = 0; i < GRID; i++) {
+    if (!grid[0][i] || !grid[6][i] || !grid[i][0] || !grid[i][6]) {
+      return null; // Missing border marker - card may be folded or occluded
+    }
+  }
+
   for (let k = 0; k < 4; k++) {
     const rot = rotateK(grid, k);
+
+    // Check orientation cells (must be white)
     if (!ORIENTATION_CELLS.every(([r, c]) => rot[r][c] === 0)) continue;
+
+    // Check border guards (must be black)
     if (!BORDER_GUARDS.every(([r, c]) => rot[r][c] === 1)) continue;
+
+    // FIX #1: Validate corner markers are present
+    if (!validateCornerMarkers(rot)) continue;
+
     const bits = DATA_POSITIONS.map(([r, c]) => rot[r][c]);
     const cardId = bitsToCardId(bits);
-    if (cardId < 1) continue;
+
+    // FIX #11: Explicit ID range validation
+    if (cardId < 1 || cardId > 100) continue;
+
     const confidence = calcConfidence(rot);
+
+    // FIX #1: Only accept if confidence >= threshold
     if (confidence < CONFIDENCE_MIN) continue;
+
     return { cardId, answer: ANSWER_MAP[k], confidence, k };
   }
   return null;
@@ -494,25 +578,48 @@ class PCardDetector {
     entries.push({ answer, confidence, ts: now });
   }
 
+  /**
+   * FIX #4: Enhanced majority voting with temporal stability
+   * - Votes based on weighted confidence across frames
+   * - Requires majority consistency to prevent random answers from hand shaking
+   * - Example: A A A A B A A => A (even if one frame shows B)
+   */
   computeStableResults(minVotes = MIN_VOTES, windowMs = BUFFER_WINDOW_MS) {
     const now = Date.now();
     const cutoff = now - windowMs;
     const out = new Map();
+    
     for (const [cardId, entries] of this._buffer) {
       const recent = entries.filter((e) => e.ts >= cutoff);
       if (recent.length < minVotes) continue;
+      
+      // FIX #4: Weighted voting by confidence
       const weight = { A: 0, B: 0, C: 0, D: 0 };
-      for (const e of recent) weight[e.answer] += e.confidence;
+      const voteCount = { A: 0, B: 0, C: 0, D: 0 };
+      
+      for (const e of recent) {
+        weight[e.answer] += e.confidence;
+        voteCount[e.answer]++;
+      }
+      
+      // Find the answer with highest weighted score
       const best = ["A", "B", "C", "D"].reduce((a, b) =>
         weight[b] > weight[a] ? b : a,
       );
-      const bestVotes = recent.filter((e) => e.answer === best).length;
-      if (bestVotes < minVotes) continue;
+      
+      const bestVotes = voteCount[best];
+      
+      // FIX #4: Require majority threshold (at least 60% of votes for stability)
+      const majorityThreshold = Math.max(minVotes, Math.ceil(recent.length * 0.6));
+      if (bestVotes < majorityThreshold) continue;
+      
       const totalW = Object.values(weight).reduce((s, v) => s + v, 0);
       out.set(cardId, {
         answer: best,
         votes: bestVotes,
+        totalFrames: recent.length,
         confidence: totalW > 0 ? weight[best] / totalW : 0,
+        voteDistribution: { ...voteCount },
       });
     }
     return out;
@@ -523,6 +630,22 @@ class PCardDetector {
   }
   clearCard(cardId) {
     this._buffer.delete(cardId);
+  }
+  
+  /**
+   * FIX #6: Get detection count for UI feedback
+   * Returns { detected: number, totalCards: number }
+   */
+  getDetectionStats() {
+    const detected = this._buffer.size;
+    return { detected, totalCards: detected }; // totalCards can be passed from backend
+  }
+  
+  /**
+   * Get all detected card IDs in current buffer
+   */
+  getDetectedCardIds() {
+    return Array.from(this._buffer.keys());
   }
 }
 

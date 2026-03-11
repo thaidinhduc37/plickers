@@ -87,6 +87,7 @@ class QuestionCreate(BaseModel):
     option_d: str
     correct_answer: str = Field(..., pattern="^[ABCD]$")
     time_limit_sec: int = 30
+    is_backup: bool = False
 
 class QuestionOut(BaseModel):
     id: int
@@ -99,6 +100,7 @@ class QuestionOut(BaseModel):
     option_d: str
     correct_answer: str
     time_limit_sec: int
+    is_backup: bool = False
 
     class Config:
         from_attributes = True

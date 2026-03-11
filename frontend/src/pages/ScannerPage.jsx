@@ -23,7 +23,13 @@ const ANSWER_COLORS = {
 };
 
 const LOCK_MS             = 600;   // cooldown mỗi thẻ (v7: 1500ms)
-const DETECT_INTERVAL_MS  = 80;    // base interval
+
+// FIX #15: Limit scan rate to 10 FPS to prevent CPU spike with 100+ cards
+// 30 FPS → 100 cards = CPU spike, 10 FPS is sufficient for scanning
+const MAX_SCAN_FPS = 10;
+const SCAN_INTERVAL_MS = 1000 / MAX_SCAN_FPS; // 100ms per frame
+
+const DETECT_INTERVAL_MS  = SCAN_INTERVAL_MS;    // base interval (10 FPS)
 const DETECT_INTERVAL_IDLE= 140;   // khi không thấy thẻ nào → giảm tải CPU
 const STABLE_MIN_VOTES    = 1;     // khớp MIN_VOTES detector v8
 const MIN_CARD_ID         = 1;
@@ -174,6 +180,10 @@ export default function ScannerPage() {
   }, []);
 
   // ── Main scan loop ──────────────────────────────────────────────────────────
+  /**
+   * FIX #15: Scan loop limited to 10 FPS to prevent CPU spike
+   * FIX #6: Report detection count for UI feedback
+   */
   const scan = useCallback(() => {
     const video  = videoRef.current;
     const canvas = canvasRef.current;
@@ -185,6 +195,7 @@ export default function ScannerPage() {
     const now      = Date.now();
     const interval = lastHadResultRef.current ? DETECT_INTERVAL_MS : DETECT_INTERVAL_IDLE;
 
+    // FIX #15: Enforce 10 FPS limit
     if (now - lastDetectMsRef.current >= interval) {
       lastDetectMsRef.current = now;
 
@@ -211,6 +222,10 @@ export default function ScannerPage() {
 
       lastHadResultRef.current = frameResults.length > 0;
 
+      // FIX #6: Get detection count for UI feedback
+      const detectionStats = detectorRef.current.getDetectionStats();
+      const detectedCardIds = detectorRef.current.getDetectedCardIds();
+
       // Debug info
       if (frameResults.length > 0) {
         const best = frameResults.reduce((a,b) => b.confidence > a.confidence ? b : a, frameResults[0]);
@@ -219,10 +234,11 @@ export default function ScannerPage() {
           answer:     best.answer,
           confidence: Math.round(best.confidence * 100),
           inFrame:    frameResults.length,
+          detected:   detectionStats.detected,
           fps:        fps.fps,
         });
       } else {
-        setDebugInfo(prev => prev ? { ...prev, inFrame: 0, fps: fps.fps } : null);
+        setDebugInfo(prev => prev ? { ...prev, inFrame: 0, detected: 0, fps: fps.fps } : null);
       }
 
       // Ghi nhận kết quả ổn định
@@ -230,10 +246,12 @@ export default function ScannerPage() {
         const stable = detectorRef.current.computeStableResults(STABLE_MIN_VOTES);
 
         for (const [cardId, { answer }] of stable) {
+          // FIX #11: Validate ID range
           if (cardId < MIN_CARD_ID || cardId > MAX_CARD_ID) continue;
           if (lockedCardsRef.current[cardId] && now < lockedCardsRef.current[cardId]) continue;
           if (scanned[cardId]) continue;
           const contestant = contestants.find(c => c.card_id === cardId);
+          // FIX #8, #9: Filter out eliminated contestants
           if (!contestant || eliminatedIds.current.has(cardId)) continue;
           if (submittingRef.current.has(cardId)) continue;
 

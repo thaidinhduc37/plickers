@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -9,6 +10,20 @@ from app.ws.manager import ws_manager
 
 router = APIRouter(prefix="/api/session", tags=["Session"])
 auth = Depends(get_current_user)
+
+
+# ─── Scan Control Schemas ──────────────────────────────────────────────────────
+
+class ScanStateRequest(BaseModel):
+    """Request body for scan state control"""
+    state: str  # "waiting" | "scanning" | "locked"
+
+
+class ScanStateResponse(BaseModel):
+    """Response for scan state"""
+    session_id: str
+    scan_state: str
+    scanned_count: int
 
 
 @router.post("/start", response_model=SessionOut)
@@ -143,3 +158,64 @@ def get_results(session_id: int, db: Session = Depends(get_db), _=auth):
 @router.get("/{session_id}/summary")
 def get_summary(session_id: int, db: Session = Depends(get_db), _=auth):
     return session_service.get_session_summary(db, session_id)
+
+
+@router.post("/retry-question")
+async def retry_question(db: Session = Depends(get_db), _=auth):
+    """Thi lại câu hỏi hiện tại."""
+    data = session_service.retry_question(db)
+    
+    from app.models.models import Session as SessionModel, SessionState
+    session = db.query(SessionModel).filter(
+        SessionModel.state == SessionState.scanning
+    ).first()
+    
+    if session:
+        q = data["current_question"]
+        await ws_manager.broadcast(session.id, "question_changed", {
+            "question_index": data["current_question_index"],
+            "total_questions": data["total_questions"],
+            "active_contestants": data["active_contestants"],
+            "restored_contestants": data.get("restored_contestants", 0),
+            "question": {
+                "id": q.id,
+                "text": q.text,
+                "option_a": q.option_a,
+                "option_b": q.option_b,
+                "option_c": q.option_c,
+                "option_d": q.option_d,
+                "time_limit_sec": q.time_limit_sec,
+            } if q else None
+        })
+    
+    return data
+
+
+@router.post("/skip-question")
+async def skip_question(db: Session = Depends(get_db), _=auth):
+    """Bỏ qua câu hỏi hiện tại (không tính điểm)."""
+    data = session_service.skip_question(db)
+    
+    from app.models.models import Session as SessionModel, SessionState
+    session = db.query(SessionModel).filter(
+        SessionModel.state == SessionState.scanning
+    ).first()
+    
+    if session:
+        q = data["current_question"]
+        await ws_manager.broadcast(session.id, "question_changed", {
+            "question_index": data["current_question_index"],
+            "total_questions": data["total_questions"],
+            "active_contestants": data["active_contestants"],
+            "question": {
+                "id": q.id,
+                "text": q.text,
+                "option_a": q.option_a,
+                "option_b": q.option_b,
+                "option_c": q.option_c,
+                "option_d": q.option_d,
+                "time_limit_sec": q.time_limit_sec,
+            } if q else None
+        })
+    
+    return data

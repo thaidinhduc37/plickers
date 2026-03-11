@@ -2,13 +2,13 @@ import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import {
     BookOpen, Plus, Trash2, ChevronDown, ChevronRight, ChevronUp,
-    Check, GripVertical, X, AlertTriangle
+    Check, GripVertical, X, AlertTriangle, Edit2
 } from 'lucide-react';
 import clsx from 'clsx';
 
 const OPTION_KEYS = ['A', 'B', 'C', 'D'];
 const OPTION_COLORS = { A: '#E53E3E', B: '#3182CE', C: '#D69E2E', D: '#38A169' };
-const EMPTY_Q = { text: '', option_a: '', option_b: '', option_c: '', option_d: '', correct_answer: 'A', time_limit_sec: 30 };
+const EMPTY_Q = { text: '', option_a: '', option_b: '', option_c: '', option_d: '', correct_answer: 'A', time_limit_sec: 30, is_backup: false };
 
 // ── Confirm Delete Dialog ─────────────────────────────────────────────────────
 function ConfirmDialog({ title, message, onConfirm, onCancel }) {
@@ -112,6 +112,16 @@ function QuestionCard({ bankId, question, index, total, onMoveUp, onMoveDown }) 
                                 );
                             })}
                         </div>
+                        <div className="flex items-center gap-2">
+                            <input
+                                type="checkbox"
+                                id="is_backup"
+                                checked={draft.is_backup || false}
+                                onChange={e => setDraft(d => ({ ...d, is_backup: e.target.checked }))}
+                                className="w-4 h-4"
+                            />
+                            <label htmlFor="is_backup" className="text-sm text-slate-600">Câu dự phòng</label>
+                        </div>
                         <div className="flex justify-end gap-2">
                             <button onClick={() => { setDraft(question); setOpen(false); }}
                                 className="px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 rounded-lg">Huỷ</button>
@@ -136,17 +146,26 @@ function QuestionCard({ bankId, question, index, total, onMoveUp, onMoveDown }) 
 
 // ── Question Set panel ─────────────────────────────────────────────────────────
 function SetPanel({ set, onDeleteSet }) {
-    const { addQuestion: addQuestionToBank, updateQuestion: updateQuestionInBank, deleteQuestion: deleteQuestionFromBank } = useApp();
+    const { addQuestion: addQuestionToBank, updateQuestion: updateQuestionInBank, deleteQuestion: deleteQuestionFromBank, updateBank } = useApp();
     const [open, setOpen] = useState(false);
     const [adding, setAdding] = useState(false);
     const [newQ, setNewQ] = useState(EMPTY_Q);
     const [confirmDel, setConfirmDel] = useState(false);
+    const [editingName, setEditingName] = useState(false);
+    const [editNameDraft, setEditNameDraft] = useState(set.title || set.name);
 
     const handleAdd = async () => {
         if (!newQ.text.trim()) return;
         await addQuestionToBank(set.id, { ...newQ, order_index: set.questions?.length + 1 || 1 });
         setNewQ(EMPTY_Q);
         setAdding(false);
+    };
+
+    const saveBankName = async () => {
+        const newName = editNameDraft.trim();
+        if (!newName) return;
+        await updateBank(set.id, newName, set.description || '');
+        setEditingName(false);
     };
 
     // API Bank backend hiện chưa hỗ trợ reorderQuestions dễ dàng qua endpoint PUT order
@@ -163,7 +182,31 @@ function SetPanel({ set, onDeleteSet }) {
                         : <ChevronRight className="w-4 h-4 text-slate-400 mr-2" />
                     }
                     <div className="flex-1 min-w-0">
-                        <p className="font-bold text-slate-800 text-base truncate">{set.title || set.name}</p>
+                        {editingName ? (
+                            <div className="flex items-center gap-2">
+                                <input
+                                    autoFocus
+                                    className="font-bold text-slate-800 text-base outline-none bg-white border border-blue-300 rounded px-2 py-1 w-full"
+                                    value={editNameDraft}
+                                    onChange={e => setEditNameDraft(e.target.value)}
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter') saveBankName();
+                                        else if (e.key === 'Escape') { setEditingName(false); setEditNameDraft(set.title || set.name); }
+                                    }}
+                                    onBlur={saveBankName}
+                                />
+                            </div>
+                        ) : (
+                            <div className="flex items-center gap-2 group">
+                                <p className="font-bold text-slate-800 text-base truncate">{set.title || set.name}</p>
+                                <button
+                                    onClick={e => { e.stopPropagation(); setEditingName(true); setEditNameDraft(set.title || set.name); }}
+                                    className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-slate-200 rounded transition-opacity"
+                                    title="Sửa tên ngân hàng">
+                                    <Edit2 className="w-3.5 h-3.5 text-slate-400" />
+                                </button>
+                            </div>
+                        )}
                         <p className="text-xs text-slate-500 mt-0.5">{set.questions?.length || 0} câu hỏi</p>
                     </div>
                     <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>

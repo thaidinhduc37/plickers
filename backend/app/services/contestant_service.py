@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from fastapi import HTTPException
-from app.models.models import Contestant, ContestantStatus
+from app.models.models import Contestant, ContestantStatus, Session as SessionModel, Response, Question, SessionState
 from typing import List, Optional
 import csv
 import io
@@ -110,3 +110,48 @@ def reset_contestants_for_session(db: Session, contest_id: int):
         "eliminated_at_question": None
     })
     db.commit()
+
+
+def reset_contestants_at_question(db: Session, contest_id: int, target_question_index: int) -> int:
+    """
+    Reset trạng thái người chơi tại câu hỏi cụ thể.
+    - Khôi phục người bị loại ở câu target_question_index hoặc sau đó.
+    - Xóa responses của câu target_question_index.
+    Returns: số lượng người chơi được khôi phục.
+    """
+    # Tìm người bị loại ở câu target_question_index hoặc sau đó
+    contestants_to_restore = db.query(Contestant).filter(
+        Contestant.contest_id == contest_id,
+        Contestant.status == ContestantStatus.eliminated,
+        or_(
+            Contestant.eliminated_at_question == target_question_index,
+            Contestant.eliminated_at_question > target_question_index
+        )
+    ).all()
+    
+    for c in contestants_to_restore:
+        c.status = ContestantStatus.active
+        c.eliminated_at_question = None
+    
+    # Xóa responses của câu hỏi target_question_index
+    session = db.query(SessionModel).filter(
+        SessionModel.contest_id == contest_id,
+        SessionModel.state.in_([SessionState.scanning, SessionState.revealed])
+    ).first()
+    
+    if session:
+        # Lấy câu hỏi tại index target_question_index
+        bank_id = session.contest.bank_id if session.contest else None
+        if bank_id:
+            question = db.query(Question).filter(
+                Question.bank_id == bank_id,
+                Question.order_index == target_question_index
+            ).first()
+            if question:
+                db.query(Response).filter(
+                    Response.session_id == session.id,
+                    Response.question_id == question.id
+                ).delete()
+    
+    db.commit()
+    return len(contestants_to_restore)

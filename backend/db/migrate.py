@@ -105,7 +105,26 @@ def run_migrations():
             print("SQLite does NOT support DROP INDEX syntax via ALTER TABLE.")
             print("Schema changes will apply on next DB recreation.")
 
-        print("\n✅ Migration complete!")
+            # Add is_backup column to questions table if not exists
+            print("\n  Checking questions.is_backup column...")
+            try:
+                # Check if column exists
+                result = conn.execute(text("""
+                    SELECT COUNT(*) FROM pragma_table_info('questions') WHERE name='is_backup'
+                """)).scalar()
+                if result == 0:
+                    print("  Adding questions.is_backup column...")
+                    conn.execute(text(
+                        "ALTER TABLE questions ADD COLUMN is_backup BOOLEAN DEFAULT 0"
+                    ))
+                    conn.commit()
+                    print("  [OK] Done")
+                else:
+                    print("  [OK] is_backup column already exists")
+            except Exception as e:
+                print(f"  Warning: {e}")
+
+        print("\n[OK] Migration complete!")
 
 
 if __name__ == "__main__":

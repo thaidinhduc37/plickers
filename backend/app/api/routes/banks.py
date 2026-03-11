@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -6,6 +6,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.schemas.schemas import QuestionBankCreate, QuestionBankOut, QuestionCreate, QuestionOut
 from app.services import bank_service
+from app.models.models import Question
 
 router = APIRouter(prefix="/api/banks", tags=["QuestionBank"])
 auth = Depends(get_current_user)
@@ -28,6 +29,14 @@ def delete_bank(bank_id: int, db: Session = Depends(get_db), _=auth):
     bank_service.delete_bank(db, bank_id)
     return {"status": "ok"}
 
+@router.patch("/{bank_id}", response_model=QuestionBankOut)
+def update_bank(bank_id: int, data: dict, db: Session = Depends(get_db), _=auth):
+    title = data.get("title")
+    description = data.get("description", "")
+    if not title:
+        raise HTTPException(status_code=400, detail="Title is required")
+    return bank_service.update_bank(db, bank_id, title, description)
+
 @router.post("/{bank_id}/questions", response_model=QuestionOut)
 def add_question(bank_id: int, data: QuestionCreate, db: Session = Depends(get_db), _=auth):
     return bank_service.add_question(db, bank_id, data)
@@ -44,4 +53,18 @@ def update_question(bank_id: int, question_id: int, data: dict, db: Session = De
 def delete_question(bank_id: int, question_id: int, db: Session = Depends(get_db), _=auth):
     bank_service.delete_question(db, bank_id, question_id)
     return {"status": "ok"}
+
+
+@router.patch("/{bank_id}/questions/{question_id}/toggle-backup", response_model=QuestionOut)
+def toggle_question_backup(bank_id: int, question_id: int, db: Session = Depends(get_db), _=auth):
+    """Đánh dấu/khử đánh dấu câu hỏi dự phòng."""
+    question = db.query(Question).filter(
+        Question.id == question_id, Question.bank_id == bank_id
+    ).first()
+    if not question:
+        raise HTTPException(status_code=404, detail="Không tìm thấy câu hỏi")
+    question.is_backup = not question.is_backup
+    db.commit()
+    db.refresh(question)
+    return question
 

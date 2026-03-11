@@ -19,7 +19,7 @@ import {
     Square, Eye, EyeOff, RefreshCw, Camera, CameraOff,
     ChevronRight, Radio, Zap, Users, CheckCircle2,
     Timer, Play, Pause, AlertTriangle, HeartHandshake,
-    Shuffle, List, TrendingUp, X, UserCheck, Monitor,
+    Shuffle, List, TrendingUp, X, UserCheck, Monitor, SkipForward,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -47,6 +47,32 @@ function ConfirmEndDialog({ onConfirm, onCancel }) {
                     </button>
                     <button onClick={onConfirm} className="flex-1 px-4 py-2 text-sm font-semibold text-white bg-red-500 hover:bg-red-600 rounded-xl">
                         Kết thúc
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ─── Confirm reveal dialog ───────────────────────────────────────────────────────
+// FIX #5: Dialog xác nhận trước khi công bố đáp án
+function ConfirmRevealDialog({ onConfirm, onCancel }) {
+    return (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+                <div className="px-6 py-5 flex flex-col items-center text-center">
+                    <div className="w-12 h-12 rounded-full bg-amber-50 flex items-center justify-center mb-3">
+                        <Eye className="w-6 h-6 text-amber-600" />
+                    </div>
+                    <h2 className="text-base font-bold text-slate-800 mb-1">Công bố đáp án?</h2>
+                    <p className="text-sm text-slate-500">Đáp án sẽ được hiển thị và thí sinh trả lời sai sẽ bị loại.</p>
+                </div>
+                <div className="px-6 pb-5 flex gap-3">
+                    <button onClick={onCancel} className="flex-1 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 rounded-xl border border-slate-200">
+                        Hủy
+                    </button>
+                    <button onClick={onConfirm} className="flex-1 px-4 py-2 text-sm font-semibold text-white bg-amber-500 hover:bg-amber-600 rounded-xl">
+                        Công bố
                     </button>
                 </div>
             </div>
@@ -318,9 +344,19 @@ function NoSession({ events, onStart, openPresentation, presenterConnected }) {
                                             {presenterConnected ? 'Đang chiếu' : 'Mở máy chiếu'}
                                         </button>
                                         <button onClick={() => onStart(ev.id)}
-                                            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white shrink-0 hover:opacity-90 shadow-sm"
+                                            disabled={loading}
+                                            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white shrink-0 hover:opacity-90 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                                             style={{ background: 'linear-gradient(135deg,#10509F,#1a6fd4)' }}>
-                                            <Zap className="w-4 h-4" /> Bắt đầu
+                                            {loading ? (
+                                                <>
+                                                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                                    Đang khởi tạo...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Zap className="w-4 h-4" /> Bắt đầu
+                                                </>
+                                            )}
                                         </button>
                                     </div>
                                 </div>
@@ -354,6 +390,8 @@ export default function LiveView() {
     const [showRescue,     setShowRescue]     = useState(false);
     const [rescueLoading,  setRescueLoading]  = useState(false);
     const [questionHistory,setQuestionHistory]= useState({});
+    // FIX #5: State cho reveal confirmation
+    const [showRevealConfirm, setShowRevealConfirm] = useState(false);
 
     const intervalRef        = useRef(null);
     const prevQIdx            = useRef(null);
@@ -443,6 +481,7 @@ export default function LiveView() {
     }, [currentQ, session?.questionIndex]); // eslint-disable-line
 
     // ── Khi receiver reconnect → gửi đúng phase, không replay state cũ ─────────
+    // FIX #4: Force sync toàn bộ state khi presenter reconnect
     const prevConnectedRef = useRef(false);
     useEffect(() => {
         if (presenterConnected && !prevConnectedRef.current) {
@@ -457,14 +496,30 @@ export default function LiveView() {
                     questions:      activeSet?.questions ?? [],
                 });
             } else {
-                // Đang thi → gửi state hiện tại
-                broadcastState({});
+                // FIX #4: Gửi toàn bộ state hiện tại thay vì gọi broadcastState()
+                broadcast({
+                    phase:           phase,
+                    question:        currentQ,
+                    votes:           session?.votes ?? {},
+                    timeLeft:        timeLeft,
+                    timerTotal:      timerSel,
+                    scannedCount:    respondedCount,
+                    activeTotal:     activeConts.length,
+                    eventName:       activeEvent?.name ?? '',
+                    questionIndex:   session?.questionIndex ?? 0,
+                    totalQuestions:  activeSet?.questions.length ?? 0,
+                    questions:       activeSet?.questions ?? [],
+                    questionHistory: questionHistory,
+                    contestants:     activeConts,
+                    responses:       session?.responses ?? {},
+                });
             }
         }
         prevConnectedRef.current = presenterConnected;
-    }, [presenterConnected]); // eslint-disable-line
+    }, [presenterConnected, phase, currentQ, session, timeLeft, timerSel, respondedCount, activeConts, activeEvent, activeSet, questionHistory]); // eslint-disable-line
 
     // ── Reset khi câu mới ──────────────────────────────────────────────────────
+    // FIX #3: Thêm timerSel dependency để reset đúng thời gian khi BTC đổi timer
     useEffect(() => {
         const idx = session?.questionIndex;
         if (idx === undefined) return;
@@ -478,8 +533,15 @@ export default function LiveView() {
             setTimerRunning(false);
             setTimeLeft(timerSel);
             clearInterval(intervalRef.current);
+            
+            // FIX #3: Force broadcast ngay để presentation screen sync
+            broadcastState({
+                phase: 'question',
+                timeLeft: timerSel,
+                timerTotal: timerSel
+            });
         }
-    }, [session?.questionIndex]);
+    }, [session?.questionIndex, timerSel]); // eslint-disable-line
 
     // ── Timer tick ─────────────────────────────────────────────────────────────
     useEffect(() => {
@@ -539,19 +601,33 @@ export default function LiveView() {
         });
     };
 
+    // FIX #10: Force stop tất cả audio khi skip
     const skipToScan = () => {
         clearInterval(intervalRef.current);
         setTimerRunning(false);
         setTimeLeft(0);
         setPhase('scanning');
         broadcastState({ phase: 'scanning', timeLeft: 0 });
+        
+        // FIX #10: Force stop audio
         stopAudio();
+        // Also pause any playing audio elements
+        const audioElements = document.querySelectorAll('audio');
+        audioElements.forEach(audio => {
+            audio.pause();
+            audio.currentTime = 0;
+        });
     };
 
     const handleReveal = async () => {
         await revealAnswer();
         setPhase('revealed');
         broadcastState({ phase: 'revealed' });
+    };
+    
+    const confirmReveal = () => {
+        setShowRevealConfirm(false);
+        handleReveal();
     };
 
     const handleNext = async () => {
@@ -1045,7 +1121,7 @@ export default function LiveView() {
                             className="flex items-center gap-2 px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-xl border border-slate-200">
                             <RefreshCw className="w-4 h-4" /> Xoá phiếu
                         </button>
-                        <button onClick={handleReveal}
+                        <button onClick={() => setShowRevealConfirm(true)}
                             className="flex items-center gap-2 px-7 py-2.5 text-white font-bold rounded-full shadow-md hover:-translate-y-0.5 transition-all bg-green-600 hover:bg-green-500">
                             <Eye className="w-4 h-4" /> Hiện đáp án
                         </button>
@@ -1056,6 +1132,14 @@ export default function LiveView() {
                         <button onClick={() => { setPhase('scanning'); broadcastState({ phase: 'scanning' }); }}
                             className="flex items-center gap-2 px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-xl border border-slate-200">
                             <EyeOff className="w-4 h-4" /> Ẩn đáp án
+                        </button>
+                        <button onClick={retryQuestion}
+                            className="flex items-center gap-2 px-5 py-2 text-sm font-bold rounded-full border-2 border-amber-400 text-amber-700 hover:bg-amber-50 transition-all">
+                            <RefreshCw className="w-4 h-4" /> Thi lại câu
+                        </button>
+                        <button onClick={skipQuestion}
+                            className="flex items-center gap-2 px-5 py-2 text-sm font-bold rounded-full border-2 border-slate-400 text-slate-700 hover:bg-slate-50 transition-all">
+                            <SkipForward className="w-4 h-4" /> Bỏ qua câu
                         </button>
                         {eliminatedConts.length > 0 && (
                             <button onClick={() => setShowRescue(true)}
@@ -1076,6 +1160,10 @@ export default function LiveView() {
             {/* ── MODALS ───────────────────────────────────────────────────── */}
             {showConfirmEnd && (
                 <ConfirmEndDialog onConfirm={handleEnd} onCancel={() => setShowConfirmEnd(false)} />
+            )}
+            {/* FIX #5: Reveal confirmation dialog */}
+            {showRevealConfirm && (
+                <ConfirmRevealDialog onConfirm={confirmReveal} onCancel={() => setShowRevealConfirm(false)} />
             )}
             {showRescue && (
                 <RescueModal

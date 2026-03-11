@@ -54,6 +54,15 @@ def delete_bank(db: Session, bank_id: int):
     db.commit()
 
 
+def update_bank(db: Session, bank_id: int, title: str, description: str) -> QuestionBank:
+    bank = get_bank(db, bank_id)
+    bank.title = title
+    bank.description = description
+    db.commit()
+    db.refresh(bank)
+    return bank
+
+
 def update_question(db: Session, bank_id: int, question_id: int, data: dict) -> Question:
     question = db.query(Question).filter(Question.id == question_id, Question.bank_id == bank_id).first()
     if not question:

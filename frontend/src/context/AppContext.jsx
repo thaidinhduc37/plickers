@@ -271,11 +271,28 @@ export function AppProvider({ children }) {
             succeededIds.has(c.id) ? { ...c, status: 'active' } : c
         ));
 
+        // FIX #6: Broadcast qua WebSocket để các client khác nhận update
+        if (succeeded.length > 0 && activeSession?.session_id) {
+            try {
+                // Broadcast btc_override event cho từng contestant được cứu
+                for (const c of succeeded) {
+                    wsManager.broadcast(activeSession.session_id, 'btc_override', {
+                        contestant_id: c.id,
+                        new_status: 'active',
+                        name: c.name,
+                        card_id: c.card_id
+                    });
+                }
+            } catch (e) {
+                console.error('[Rescue] Broadcast failed:', e);
+            }
+        }
+
         if (succeeded.length > 0) showToast('success', `✅ Đã cứu trợ ${succeeded.length} thí sinh`);
         if (succeeded.length < toRescue.length) showToast('error', `${toRescue.length - succeeded.length} người không cứu được`);
 
         return succeeded;
-    }, [contestants, showToast]);
+    }, [contestants, showToast, activeSession]);
 
     const setContestantStatus = (eventId, contestantId, status) => updateContestantStatus(contestantId, status);
     const resetContestants = async (contestId) => {
@@ -384,6 +401,52 @@ export function AppProvider({ children }) {
         catch (e) { handleApiError(e, 'Không thể sang câu tiếp theo'); }
     };
 
+    const retryQuestion = async () => {
+        setJustEliminated([]);
+        setVotes({ A: 0, B: 0, C: 0, D: 0, total: 0 });
+        responsesMapRef.current = {};
+        setResponsesMap({});
+        try {
+            const result = await api.retryQuestion();
+            if (result && result.current_question_index !== undefined) {
+                setActiveSession(s => s ? {
+                    ...s,
+                    state: 'scanning',
+                    current_question_index: result.current_question_index,
+                    total_questions: result.total_questions,
+                    current_question: result.current_question,
+                    active_contestants: result.active_contestants,
+                    scanned_count: 0,
+                } : s);
+                showToast('success', `Đã thi lại câu ${result.current_question_index + 1}. Khôi phục ${result.restored_contestants || 0} thí sinh.`);
+            }
+        }
+        catch (e) { handleApiError(e, 'Không thể thi lại câu hỏi'); }
+    };
+
+    const skipQuestion = async () => {
+        setJustEliminated([]);
+        setVotes({ A: 0, B: 0, C: 0, D: 0, total: 0 });
+        responsesMapRef.current = {};
+        setResponsesMap({});
+        try {
+            const result = await api.skipQuestion();
+            if (result && result.current_question_index !== undefined) {
+                setActiveSession(s => s ? {
+                    ...s,
+                    state: 'scanning',
+                    current_question_index: result.current_question_index,
+                    total_questions: result.total_questions,
+                    current_question: result.current_question,
+                    active_contestants: result.active_contestants,
+                    scanned_count: 0,
+                } : s);
+                showToast('success', `Đã bỏ qua câu hỏi. Chuyển sang câu ${result.current_question_index + 1}.`);
+            }
+        }
+        catch (e) { handleApiError(e, 'Không thể bỏ qua câu hỏi'); }
+    };
+
     const endSession = async () => {
         try {
             const result = await api.endSession();
@@ -418,9 +481,21 @@ export function AppProvider({ children }) {
             setCameraConnected(true);
         });
 
+        // FIX #9: Thêm toast notification và auto-reconnect khi WS disconnect
+        let reconnectTimeout = null;
+        const attemptReconnect = () => {
+            if (activeSession?.session_id) {
+                showToast('warning', 'Mất kết nối WebSocket. Đang thử lại...');
+                reconnectTimeout = setTimeout(() => {
+                    connectWebSocket(activeSession.session_id);
+                }, 3000);
+            }
+        };
+        
         wsManager.on('__disconnected', () => {
             setWsConnected(false);
             setCameraConnected(false);
+            attemptReconnect();
         });
 
         // FIX #1: Mỗi lần camera quét được thẻ → scan.py broadcast "answer_received"
@@ -662,7 +737,7 @@ export function AppProvider({ children }) {
         addClass, deleteClass, addStudentsToClass, removeStudentFromClass, setActiveClassId,
 
         fetchActiveSession, startSession, submitScan, resetContestants,
-        revealAnswer, nextQuestion, endSession, clearResponses,
+        revealAnswer, nextQuestion, retryQuestion, skipQuestion, endSession, clearResponses,
         connectWebSocket,
         downloadContestCards, downloadBlankCards,
         simulateAnswer,

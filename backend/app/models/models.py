@@ -81,6 +81,7 @@ class Question(Base):
     option_d = Column(String(500), nullable=False)
     correct_answer = Column(String(1), nullable=False)  # 'A' | 'B' | 'C' | 'D'
     time_limit_sec = Column(Integer, default=30)
+    is_backup = Column(Boolean, default=False, nullable=False)  # Câu hỏi dự phòng
 
     bank = relationship("QuestionBank", back_populates="questions")
     responses = relationship("Response", back_populates="question")

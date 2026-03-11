@@ -162,6 +162,15 @@ class ApiClient {
     return res.json();
   }
 
+  async updateBank(bankId, title, description = "") {
+    const res = await this.patch(`/api/banks/${bankId}`, {
+      title,
+      description,
+    });
+    await this.assertOk(res);
+    return res.json();
+  }
+
   async addQuestionToBank(bankId, questionData) {
     const res = await this.post(`/api/banks/${bankId}/questions`, questionData);
     await this.assertOk(res);
@@ -364,6 +373,20 @@ class ApiClient {
   /** Chuyển sang câu hỏi tiếp theo */
   async nextQuestion() {
     const res = await this.post("/api/session/next-question");
+    await this.assertOk(res);
+    return res.json();
+  }
+
+  /** Thi lại câu hỏi hiện tại */
+  async retryQuestion() {
+    const res = await this.post("/api/session/retry-question");
+    await this.assertOk(res);
+    return res.json();
+  }
+
+  /** Bỏ qua câu hỏi hiện tại */
+  async skipQuestion() {
+    const res = await this.post("/api/session/skip-question");
     await this.assertOk(res);
     return res.json();
   }
