@@ -51,43 +51,37 @@ app = FastAPI(
 # CORS MIDDLEWARE — PHẢI first
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "https://localhost:5173",
-        "https://localhost:5174",
-        "https://10.10.11.20:5173",
-        "https://10.10.11.20:5174",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow all origins for mobile testing
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     max_age=3600,
 )
 
-# Đăng ký routes
-app.include_router(auth.router)
-app.include_router(banks.router)
-app.include_router(contests.router)
-app.include_router(contestants.router)
-app.include_router(session.router)
-app.include_router(scan.router)
-app.include_router(cards.router)
-app.include_router(websocket.router)
-app.include_router(public_api.router)
+# Đăng ký routes - các router đã có prefix riêng
+app.include_router(auth.router, tags=["auth"])
+app.include_router(banks.router, tags=["banks"])
+app.include_router(contests.router, tags=["contests"])
+app.include_router(contestants.router, tags=["contestants"])
+app.include_router(session.router, tags=["session"])
+app.include_router(scan.router, tags=["scan"])
+app.include_router(cards.router, tags=["cards"])
+app.include_router(websocket.router, tags=["websocket"])
+app.include_router(public_api.router, tags=["public"])
 
 # Global exception handler (sau routes để catch tất cả errors)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    error_msg = f"❌ ERROR on {request.method} {request.url.path}: {str(exc)}"
+    error_msg = f"[ERROR] {request.method} {request.url.path}: {str(exc)}"
     traceback_str = traceback.format_exc()
     
-    # Log to console
-    print(error_msg)
-    print(traceback_str)
+    # Log to console (use encode/decode to avoid UnicodeEncodeError on Windows)
+    try:
+        print(error_msg.encode('utf-8').decode('utf-8'))
+        print(traceback_str.encode('utf-8').decode('utf-8'))
+    except:
+        print(error_msg)
+        print(traceback_str)
     
     # Also log to file
     try:

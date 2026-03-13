@@ -5,8 +5,8 @@ from app.schemas.schemas import QuestionBankCreate, QuestionCreate
 from typing import List
 
 
-def create_bank(db: Session, data: QuestionBankCreate) -> QuestionBank:
-    bank = QuestionBank(title=data.title, description=data.description)
+def create_bank(db: Session, data: QuestionBankCreate, created_by: str = None) -> QuestionBank:
+    bank = QuestionBank(title=data.title, description=data.description, created_by=created_by)
     db.add(bank)
     db.commit()
     db.refresh(bank)

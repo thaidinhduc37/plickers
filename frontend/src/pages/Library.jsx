@@ -62,6 +62,9 @@ function QuestionCard({ bankId, question, index, total, onMoveUp, onMoveDown }) 
                     <p className={clsx('flex-1 truncate', !question.text && 'text-slate-400 italic')}>
                         {question.text || 'Câu hỏi chưa có nội dung'}
                     </p>
+                    {question.is_backup && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold text-amber-700 bg-amber-100 border border-amber-200 ml-1 shrink-0">Dự phòng</span>
+                    )}
                     <span className="px-2 py-0.5 rounded text-xs font-bold text-white ml-2"
                         style={{ backgroundColor: OPTION_COLORS[question.correct_answer] }}>
                         {question.correct_answer}
@@ -207,7 +210,12 @@ function SetPanel({ set, onDeleteSet }) {
                                 </button>
                             </div>
                         )}
-                        <p className="text-xs text-slate-500 mt-0.5">{set.questions?.length || 0} câu hỏi</p>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                            {(set.questions || []).filter(q => !q.is_backup).length} câu chính
+                            {(set.questions || []).filter(q => q.is_backup).length > 0 && (
+                                <> · <span className="text-amber-600">{(set.questions || []).filter(q => q.is_backup).length} dự phòng</span></>
+                            )}
+                        </p>
                     </div>
                     <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
                         <button
@@ -215,6 +223,11 @@ function SetPanel({ set, onDeleteSet }) {
                             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white rounded-lg hover:opacity-90"
                             style={{ backgroundColor: '#10509F' }}>
                             <Plus className="w-3.5 h-3.5" /> Thêm câu
+                        </button>
+                        <button
+                            onClick={() => { setOpen(true); setAdding(true); setNewQ({ ...EMPTY_Q, is_backup: true }); }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100">
+                            <Plus className="w-3.5 h-3.5" /> Câu dự phòng
                         </button>
                         <button
                             onClick={() => setConfirmDel(true)}
@@ -230,6 +243,14 @@ function SetPanel({ set, onDeleteSet }) {
                         {/* Inline add form */}
                         {adding && (
                             <div className="bg-white rounded-xl border-2 border-blue-300 shadow p-4 space-y-3">
+                                <div className="flex items-center gap-2 mb-1">
+                                    <span className={clsx(
+                                        'px-2 py-0.5 rounded text-xs font-bold',
+                                        newQ.is_backup ? 'text-amber-700 bg-amber-100 border border-amber-200' : 'text-blue-700 bg-blue-50 border border-blue-200'
+                                    )}>
+                                        {newQ.is_backup ? '📋 Câu dự phòng' : '📝 Câu chính'}
+                                    </span>
+                                </div>
                                 <textarea
                                     className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-300 outline-none resize-none"
                                     rows={2} placeholder="Nội dung câu hỏi..."
@@ -274,13 +295,39 @@ function SetPanel({ set, onDeleteSet }) {
                             </div>
                         )}
 
-                        {(set.questions || []).map((q, i) => (
-                            <QuestionCard
-                                key={q.id} bankId={set.id} question={q}
-                                index={i} total={set.questions?.length || 0}
-                                onMoveUp={() => moveUp(i)} onMoveDown={() => moveDown(i)}
-                            />
-                        ))}
+                        {/* ── Câu chính ── */}
+                        {(() => {
+                            const mainQs = (set.questions || []).filter(q => !q.is_backup);
+                            const backupQs = (set.questions || []).filter(q => q.is_backup);
+                            return (
+                                <>
+                                    {mainQs.length > 0 && (
+                                        <div className="text-xs font-bold text-slate-400 uppercase tracking-widest pt-1 pb-0.5">Câu chính ({mainQs.length})</div>
+                                    )}
+                                    {mainQs.map((q, i) => (
+                                        <QuestionCard
+                                            key={q.id} bankId={set.id} question={q}
+                                            index={i} total={mainQs.length}
+                                            onMoveUp={() => moveUp(i)} onMoveDown={() => moveDown(i)}
+                                        />
+                                    ))}
+
+                                    {backupQs.length > 0 && (
+                                        <div className="flex items-center gap-2 pt-3 pb-0.5">
+                                            <div className="text-xs font-bold text-amber-600 uppercase tracking-widest">Câu dự phòng ({backupQs.length})</div>
+                                            <div className="flex-1 border-t border-amber-200" />
+                                        </div>
+                                    )}
+                                    {backupQs.map((q, i) => (
+                                        <QuestionCard
+                                            key={q.id} bankId={set.id} question={q}
+                                            index={i} total={backupQs.length}
+                                            onMoveUp={() => moveUp(i)} onMoveDown={() => moveDown(i)}
+                                        />
+                                    ))}
+                                </>
+                            );
+                        })()}
 
                         {(!set.questions || set.questions.length === 0) && !adding && (
                             <div className="text-center py-8 text-slate-400">

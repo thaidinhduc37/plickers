@@ -4,12 +4,12 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.deps import get_current_user_or_auto
 from app.models.models import Contestant
 from app.services.card_service import generate_cards_pdf, generate_blank_cards_pdf
 
 router = APIRouter(prefix="/api/cards", tags=["Cards"])
-auth = Depends(get_current_user)
+auth = Depends(get_current_user_or_auto)
 
 
 @router.get("/generate/blank")

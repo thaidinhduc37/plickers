@@ -158,7 +158,7 @@ export default function Dashboard() {
                             {greeting}, <span style={{ color: '#10509F' }}>Admin</span> 👋
                         </h1>
                         <p className="text-sm text-slate-500 mt-0.5">
-                            Tổng quan hệ thống ShieldPoll
+                            Tổng quan hệ thống Plicker
                         </p>
                     </div>
                     {!activeSession && (

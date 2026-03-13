@@ -22,15 +22,22 @@ const ANSWER_COLORS = {
   D: { bg: '#DCFCE7', border: '#4ADE80', text: '#166534', hex: '#4ADE80' },
 };
 
-const LOCK_MS             = 600;   // cooldown mỗi thẻ (v7: 1500ms)
+const LOCK_MS             = 300;   // cooldown mỗi thẻ — lia nhanh cần unlock sớm
 
 // FIX #15: Limit scan rate to 10 FPS to prevent CPU spike with 100+ cards
 // 30 FPS → 100 cards = CPU spike, 10 FPS is sufficient for scanning
-const MAX_SCAN_FPS = 10;
-const SCAN_INTERVAL_MS = 1000 / MAX_SCAN_FPS; // 100ms per frame
+const MAX_SCAN_FPS = 15;
+const SCAN_INTERVAL_MS = 1000 / MAX_SCAN_FPS; // ~67ms per frame
+
+// Scale video xuống 960px trước khi detect(). Ở 960px, binarize() chạy S=1
+// (floor(960/960)=1), ~520K phép/frame — chấp nhận được ở 10 FPS.
+// 960px cho phép bắt thẻ nhỏ/xa tốt hơn nhiều so với 640px.
+const DETECT_W            = 960;
 
 const DETECT_INTERVAL_MS  = SCAN_INTERVAL_MS;    // base interval (10 FPS)
-const DETECT_INTERVAL_IDLE= 140;   // khi không thấy thẻ nào → giảm tải CPU
+// Bỏ idle slowdown — lia camera cần luôn quét ở tốc độ tối đa
+// Khi lia, thẻ xuất hiện rồi biến mất rất nhanh, giảm FPS = bỏ sót
+const DETECT_INTERVAL_IDLE= SCAN_INTERVAL_MS;
 const STABLE_MIN_VOTES    = 1;     // khớp MIN_VOTES detector v8
 const MIN_CARD_ID         = 1;
 const MAX_CARD_ID         = 100;
@@ -56,8 +63,6 @@ export default function ScannerPage() {
   const [error,          setError]          = useState('');
   const [cameraReady,    setCameraReady]    = useState(false);
   const [status,         setStatus]         = useState('connecting');
-  const [manualId,       setManualId]       = useState('');
-  const [manualLoading,  setManualLoading]  = useState(false);
   const [showList,       setShowList]       = useState(false);
   const [debugInfo,      setDebugInfo]      = useState(null); // { cardId, answer, confidence, inFrame, fps }
 
@@ -74,6 +79,11 @@ export default function ScannerPage() {
   const eliminatedIds   = useRef(new Set());
   const fpsCountRef     = useRef({ frames: 0, last: Date.now(), fps: 0 });
   const lastHadResultRef= useRef(false);
+  // Bug C fix: scannedRef mirrors scanned state so scan loop doesn't need scanned in deps
+  const scannedRef      = useRef({});
+
+  // Bug C fix: keep scannedRef in sync with state so scan loop reads latest without being in deps
+  useEffect(() => { scannedRef.current = scanned; }, [scanned]);
 
   // Sync eliminated contestants
   useEffect(() => {
@@ -85,6 +95,7 @@ export default function ScannerPage() {
   // ── Session polling ─────────────────────────────────────────────────────────
   const fetchSession = useCallback(async () => {
     try {
+      // Dùng API có auth — giống bản gốc
       const data = await api.getActiveSession();
       if (!data?.session_id) { setStatus('no_session'); setSession(null); return; }
       setSession(prev => {
@@ -97,8 +108,10 @@ export default function ScannerPage() {
         }
         return data;
       });
-      if (data?.contest_id)
-        api.getContestants(data.contest_id).then(setContestants).catch(()=>{});
+      if (data?.contest_id) {
+        const res = await api.getContestants(data.contest_id);
+        setContestants(res || []);
+      }
       setStatus('ready');
     } catch { setStatus('no_session'); }
   }, []);
@@ -124,8 +137,15 @@ export default function ScannerPage() {
             },
           });
         } catch {
-          // Fallback nếu advanced constraints không được hỗ trợ
-          stream = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS);
+          try {
+            // Fallback 1: bỏ advanced constraints (focusMode không được hỗ trợ)
+            stream = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS);
+          } catch {
+            // Fallback 2: bỏ min constraints (phone không đảm bảo 1280px)
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+            });
+          }
         }
         if (!active) { stream.getTracks().forEach(t => t.stop()); return; }
         streamRef.current = stream;
@@ -208,17 +228,29 @@ export default function ScannerPage() {
         fps.last  = now;
       }
 
-      // Process frame
+      // PERF FIX: Draw video scaled to DETECT_W before detect() so binarize()
+      // runs with S=1 (no inner downsample loop) — ~9× faster on mobile
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      canvas.width  = video.videoWidth;
-      canvas.height = video.videoHeight;
+      const vW = video.videoWidth || 1280;
+      const vH = video.videoHeight || 720;
+      const scale  = DETECT_W / vW;
+      canvas.width  = DETECT_W;
+      canvas.height = Math.round(vH * scale);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
       const frameResults = detectorRef.current.detect(canvas, ctx);
       const blobRects    = detectorRef.current.getLastBlobRects();
 
+      // Scale blobRects back to video coordinates for overlay
+      const invScale = 1 / scale;
+      const scaledRects = blobRects.map(r => ({
+        ...r,
+        x: r.x * invScale, y: r.y * invScale,
+        w: r.w * invScale, h: r.h * invScale,
+      }));
+
       // Vẽ overlay
-      drawOverlay(blobRects, video.videoWidth, video.videoHeight);
+      drawOverlay(scaledRects, vW, vH);
 
       lastHadResultRef.current = frameResults.length > 0;
 
@@ -241,17 +273,16 @@ export default function ScannerPage() {
         setDebugInfo(prev => prev ? { ...prev, inFrame: 0, detected: 0, fps: fps.fps } : null);
       }
 
-      // Ghi nhận kết quả ổn định
+      // 2-frame confirm: detect() feed buffer, computeStableResults lọc 2 frame đồng ý
       if (session) {
         const stable = detectorRef.current.computeStableResults(STABLE_MIN_VOTES);
+        const batch = [];
 
         for (const [cardId, { answer }] of stable) {
-          // FIX #11: Validate ID range
           if (cardId < MIN_CARD_ID || cardId > MAX_CARD_ID) continue;
+          if (scannedRef.current[cardId]) continue;
           if (lockedCardsRef.current[cardId] && now < lockedCardsRef.current[cardId]) continue;
-          if (scanned[cardId]) continue;
           const contestant = contestants.find(c => c.card_id === cardId);
-          // FIX #8, #9: Filter out eliminated contestants
           if (!contestant || eliminatedIds.current.has(cardId)) continue;
           if (submittingRef.current.has(cardId)) continue;
 
@@ -260,21 +291,30 @@ export default function ScannerPage() {
           detectorRef.current.clearCard(cardId);
 
           const name = contestant.name || `Thẻ #${String(cardId).padStart(3,'0')}`;
+          batch.push({ card_id: cardId, answer, name, contestantId: contestant.id });
+
           setScanned(prev => {
             if (prev[cardId]) return prev;
-            setLastScan({ cardId, name, answer });
-            setTimeout(() => setLastScan(null), 1600);
             return { ...prev, [cardId]: { name, answer, contestantId: contestant.id } };
           });
+        }
 
-          api.submitScan(session.session_id, [{ card_id: cardId, answer }])
-            .finally(() => submittingRef.current.delete(cardId));
+        if (batch.length > 0) {
+          const last = batch[batch.length - 1];
+          setLastScan({ cardId: last.card_id, name: last.name, answer: last.answer });
+          setTimeout(() => setLastScan(null), 1600);
+
+          api.submitScan(session.session_id,
+            batch.map(({ card_id, answer }) => ({ card_id, answer }))
+          ).finally(() => {
+            for (const item of batch) submittingRef.current.delete(item.card_id);
+          });
         }
       }
     }
 
     animRef.current = requestAnimationFrame(scan);
-  }, [session, contestants, scanned, drawOverlay]);
+  }, [session, contestants, drawOverlay]);
 
   useEffect(() => {
     if (cameraReady) animRef.current = requestAnimationFrame(scan);
@@ -282,23 +322,6 @@ export default function ScannerPage() {
   }, [scan, cameraReady]);
 
   // ── Handlers ────────────────────────────────────────────────────────────────
-  const handleManualConnect = useCallback(async (e) => {
-    e.preventDefault();
-    const sid = parseInt(manualId.trim(), 10);
-    if (isNaN(sid)) return;
-    setManualLoading(true);
-    try {
-      const data = await api.getSessionResults(sid);
-      if (!data) { setError('Không tìm thấy phiên thi #' + sid); return; }
-      const active = await api.getActiveSession().catch(()=>null);
-      const sessionData = active || { session_id:sid, current_question_index:0, total_questions:'?', state:'scanning' };
-      sessionData.session_id = sid;
-      setSession(sessionData);
-      setStatus('ready');
-    } catch { setError('Không tìm thấy phiên thi #' + sid); }
-    finally  { setManualLoading(false); }
-  }, [manualId]);
-
   const handleSubmit = async () => {
     if (!session) return;
     setSubmitting(true);
@@ -312,6 +335,7 @@ export default function ScannerPage() {
         merged[cardId] = { name: c.name || `Thẻ #${String(cardId).padStart(3,'0')}`, answer, contestantId: c.id };
       }
       if (!Object.keys(merged).length) return;
+      // Bug B fix: dùng auth endpoint giống scan loop — có ownership check
       await api.submitScan(session.session_id,
         Object.entries(merged).map(([cardId, {answer}]) => ({ card_id: Number(cardId), answer }))
       );
@@ -321,6 +345,7 @@ export default function ScannerPage() {
   };
 
   const handleReveal = async () => {
+    // Bug H fix: dùng auth endpoint — ScannerPage là ProtectedRoute, public endpoint không có ownership check
     try { await api.revealAnswer(); setRevealed(true); }
     catch(e) { setError(e.message); }
   };
@@ -446,38 +471,22 @@ export default function ScannerPage() {
           </button>
         </div>
 
-        {/* Overlay no-session */}
+        {/* Overlay no-session: tự động kết nối qua auth, không cần nhập ID thủ công */}
         {status !== 'ready' && (
-          <div style={{ position:'absolute', inset:0, background:'rgba(15,23,42,0.92)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:12, padding:'0 24px' }}>
-            <div style={{ fontSize:36 }}>{status==='connecting' ? '🔄' : '⏳'}</div>
-            <p style={{ color:'#94a3b8', fontSize:14, textAlign:'center' }}>
-              {status==='connecting' ? 'Đang kết nối server...' : 'Chưa có phiên thi nào đang diễn ra'}
+          <div style={{ position:'absolute', inset:0, background:'rgba(15,23,42,0.92)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:16, padding:'0 32px' }}>
+            <div style={{ fontSize:40 }}>{status==='connecting' ? '🔄' : '⏳'}</div>
+            <p style={{ color:'#e2e8f0', fontSize:16, fontWeight:600, textAlign:'center', margin:0 }}>
+              {status==='connecting' ? 'Đang kết nối...' : 'Chưa có phiên thi nào đang diễn ra'}
+            </p>
+            <p style={{ color:'#64748b', fontSize:13, textAlign:'center', margin:0 }}>
+              {status==='connecting'
+                ? 'Đang tìm phiên thi hiện tại...'
+                : 'Hãy bắt đầu phiên thi từ trang Dashboard, trang này sẽ tự động kết nối.'}
             </p>
             <button onClick={fetchSession}
-              style={{ padding:'7px 18px', borderRadius:10, border:'1px solid #475569', background:'#1e293b', color:'#cbd5e1', fontSize:13, cursor:'pointer' }}>
-              🔃 Thử lại
+              style={{ padding:'9px 22px', borderRadius:10, border:'1px solid #475569', background:'#1e293b', color:'#cbd5e1', fontSize:14, cursor:'pointer', marginTop:4 }}>
+              🔃 Kiểm tra lại
             </button>
-            <form onSubmit={handleManualConnect}
-              style={{ display:'flex', gap:8, marginTop:8, width:'100%', maxWidth:280 }}>
-              <input
-                type="number" placeholder="Nhập Session ID..."
-                value={manualId} onChange={e => setManualId(e.target.value)}
-                style={{
-                  flex:1, padding:'9px 12px', borderRadius:10,
-                  border:'1.5px solid #475569', background:'#0f172a',
-                  color:'#f1f5f9', fontSize:15, textAlign:'center', outline:'none',
-                }}
-              />
-              <button type="submit" disabled={!manualId.trim() || manualLoading}
-                style={{
-                  padding:'9px 14px', borderRadius:10, border:'none',
-                  background: manualId.trim() ? '#fbbf24' : '#334155',
-                  color: manualId.trim() ? '#92400e' : '#64748b',
-                  fontWeight:700, fontSize:14, cursor:'pointer',
-                }}>
-                {manualLoading ? '...' : 'Kết nối'}
-              </button>
-            </form>
           </div>
         )}
       </div>

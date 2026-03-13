@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { 
   CheckCircle2, 
@@ -11,7 +11,6 @@ import {
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-const TOKEN = 'shieldpoll_secret_token';
 
 const ANSWER_COLORS = {
     A: { bg: 'rgba(239, 68, 68, 0.1)', border: '#ef4444', text: '#ef4444', shadow: 'rgba(239, 68, 68, 0.2)' },
@@ -23,26 +22,37 @@ const ANSWER_COLORS = {
 export default function MobileScan() {
     const [params] = useSearchParams();
     const studentId = Number(params.get('student_id') ?? -1);
+    const sessionId = params.get('session_id');
 
     const [session, setSession] = useState(null);
     const [submitted, setSubmitted] = useState(false);
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(true);
     const [selected, setSelected] = useState(null);
+    
+    // FIX B5: Use useRef to track question index instead of session in deps
+    const prevIndexRef = useRef(null);
+    const studentIdRef = useRef(studentId);
 
     useEffect(() => {
+        if (!sessionId) {
+            setError('Thiếu session_id trong URL.');
+            setLoading(false);
+            return;
+        }
+
         const fetchSession = async () => {
             try {
-                const res = await fetch(`${API_BASE}/api/session/active`, {
-                    headers: { Authorization: `Bearer ${TOKEN}` },
-                });
+                // Use public endpoint - no auth required
+                const res = await fetch(`${API_BASE}/api/public/session/${sessionId}`);
                 if (res.ok) {
                     const data = await res.json();
-                    // Reset trạng thái submit nếu session đổi sang câu hỏi mới
-                    if (session && session.current_question_index !== data.current_question_index) {
+                    // FIX B5: Check question index change using ref, not session state
+                    if (prevIndexRef.current !== null && prevIndexRef.current !== data.current_question_index) {
                         setSubmitted(false);
                         setSelected(null);
                     }
+                    prevIndexRef.current = data.current_question_index;
                     setSession(data);
                 } else {
                     setError('Chưa có phiên học nào đang diễn ra.');
@@ -54,36 +64,57 @@ export default function MobileScan() {
             }
         };
         fetchSession();
-        const interval = setInterval(fetchSession, 3000); // Poll nhanh hơn để mượt
+        const interval = setInterval(fetchSession, 3000);
         return () => clearInterval(interval);
-    }, [session]);
+    }, [sessionId]); // FIX B5: Empty deps - runs once on mount
+
+    // FIX B15: Add retry with exponential backoff for network failures
+    const submitWithRetry = async (answer, retries = 3) => {
+        for (let i = 0; i < retries; i++) {
+            try {
+                // Use public endpoint - no auth required
+                const res = await fetch(`${API_BASE}/api/public/session/${sessionId}/scan`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        results: [{ card_id: studentIdRef.current, answer }]
+                    }),
+                });
+                if (res.ok) {
+                    setSubmitted(true);
+                    return;
+                } else {
+                    const data = await res.json();
+                    // Check if eliminated
+                    if (data.detail && data.detail.includes('eliminated')) {
+                        setError('Bạn đã bị loại ở câu trước. Cảm ơn đã tham gia!');
+                        return;
+                    }
+                    if (i === retries - 1) {
+                        setError(data.detail || 'Lỗi khi gửi đáp án.');
+                        setSelected(null);
+                        return;
+                    }
+                }
+            } catch {
+                if (i === retries - 1) {
+                    setError('Lỗi kết nối. Không thể gửi sau 3 lần thử.');
+                    setSelected(null);
+                    return;
+                }
+                // Exponential backoff: 1s, 2s, 4s
+                await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i)));
+            }
+        }
+    };
 
     const handleAnswer = async (answer) => {
         if (!session || submitted) return;
         setSelected(answer);
-        try {
-            const res = await fetch(`${API_BASE}/api/scan/submit`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${TOKEN}`,
-                },
-                body: JSON.stringify({
-                    session_id: session.session_id,
-                    results: [{ card_id: studentId, answer }]
-                }),
-            });
-            if (res.ok) {
-                setSubmitted(true);
-            } else {
-                const data = await res.json();
-                setError(data.detail || 'Lỗi khi gửi đáp án.');
-                setSelected(null);
-            }
-        } catch {
-            setError('Lỗi kết nối. Thử lại nhé!');
-            setSelected(null);
-        }
+        await submitWithRetry(answer);
     };
 
     if (loading) return (

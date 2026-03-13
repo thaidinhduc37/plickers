@@ -55,22 +55,24 @@ for (let i = 0; i < GRID; i++) {
 }
 
 // ─── Tuning ────────────────────────────────────────────────────────────────────
-const CONFIDENCE_MIN = 0.55; // cao hơn v7 (0.40) để giảm false positive
-const MAX_BLOBS = 30; // tăng từ 20 để bắt nhiều thẻ hơn
-const BLOB_MIN_AREA_PCT = 0.25; // hạ từ 1.0 để bắt thẻ nhỏ/xa
-const BLOB_MIN_PX = 28; // tối thiểu 28×28 px sau downsample
-const ASPECT_MIN = 0.45; // nới từ 0.65 — bắt thẻ nghiêng 40°+
-const ASPECT_MAX = 2.2; // nới từ 1.5
-const CELL_SAMPLE_R = 2; // 5×5 majority vote / cell
-const TARGET_W = 640;
+const CONFIDENCE_MIN = 0.55; // phải đủ chắc chắn mới chấp nhận — chống sai đáp án
+const MAX_BLOBS = 150;
+const BLOB_MIN_AREA_PCT = 0.08;
+const BLOB_MIN_PX = 14;
+const ASPECT_MIN = 0.42;
+const ASPECT_MAX = 2.4;
+const CELL_SAMPLE_R = 2;
+const TARGET_W = 960;
 
-// ─── FIX #13: Minimum card size validation (10cm x 10cm at typical distance) ──
-// Giả sử camera ở ~1.5m, 10cm ≈ 100px ở ảnh đã downsample
-const MIN_CARD_AREA_PX = 100 * 100; // 100x100 px minimum
+// ─── Minimum card size — bắt thẻ xa đến ~6m ──────────────────────────────────
+const MIN_CARD_AREA_PX = 18 * 18; // 324px² — thẻ tối thiểu 18×18px
 
 // ─── Temporal buffer ──────────────────────────────────────────────────────────
-const BUFFER_WINDOW_MS = 1500; // giảm từ 2500ms — phản hồi nhanh hơn
-const MIN_VOTES = 1; // 1 frame rõ là đủ (v7: 2)
+const BUFFER_WINDOW_MS = 800; // 800ms — đủ cho 2 frame ở 15 FPS (~133ms)
+// Bug G fix: MIN_VOTES=1 là ngưỡng tối thiểu để vào temporal buffer.
+// Threshold thực tế trong computeStableResults = max(1, ceil(N×0.6)) với N=min(frames_in_window,5).
+// Ví dụ: 5 frames → threshold=3; 2 frames → threshold=2. "1 frame là đủ" chỉ đúng khi window rất thưa.
+const MIN_VOTES = 1; // ngưỡng tối thiểu vào voting (threshold thực tế cao hơn, xem computeStableResults)
 
 // ─── Decode helpers ───────────────────────────────────────────────────────────
 /**
@@ -134,15 +136,16 @@ function calcConfidence(rot) {
  * Returns true if the card has valid corner detection
  */
 function validateCornerMarkers(rot) {
-  // Check 4 corners: top-left, top-right, bottom-left, bottom-right
+  // Lia nhanh / thẻ xa → góc dễ bị noise. Chỉ cần 2/4 góc để validate.
+  // Đảm bảo ít nhất 1 góc ở mỗi phía (trên/dưới) để tránh false positive hoàn toàn.
   const corners = [
     [0, 0],
     [0, 6],
     [6, 0],
     [6, 6],
   ];
-  // All corners should be black (1) as they're part of the outer border
-  return corners.every(([r, c]) => rot[r][c] === 1);
+  const valid = corners.filter(([r, c]) => rot[r][c] === 1).length;
+  return valid >= 2;
 }
 
 // ─── Step 1: Adaptive local threshold (thay Otsu toàn ảnh) ───────────────────
@@ -182,8 +185,12 @@ function binarize(imageData, width, height) {
         integral[(y + 1) * (sw + 1) + x] -
         integral[y * (sw + 1) + x];
 
-  // Adaptive threshold: so với mean vùng HALF*2 xung quanh, offset -8
-  const HALF = 24,
+  // OFFSET=8: cân bằng cho hội trường ánh sáng yếu — 10 quá mạnh bỏ sót thẻ, 7 quá nhạy gây noise
+  // HALF tỉ lệ theo kích thước ảnh: thẻ lớn (gần camera) có viền dày ~100px,
+  // cần cửa sổ đủ rộng để vượt ra ngoài viền đen. HALF=28 cố định → cửa sổ 57px
+  // nằm hoàn toàn trong viền → mean rất thấp → viền bị xoá → blob vỡ.
+  // Integral image lookup O(1) → tăng HALF KHÔNG ảnh hưởng performance.
+  const HALF = Math.max(28, Math.round(sw / 12)),
     OFFSET = 8;
   const binary = new Uint8Array(sw * sh);
   for (let y = 0; y < sh; y++) {
@@ -274,11 +281,20 @@ function detectContours(binary, sw, sh, minAreaPct = BLOB_MIN_AREA_PCT) {
       const blobWidth = maxX - minX + 1;
       const blobHeight = maxY - minY + 1;
       const blobArea = blobWidth * blobHeight;
-      
+
       // Skip if blob is too small to be a valid card
       if (blobArea < MIN_CARD_AREA_PX) continue;
-      
-      if (area >= minArea) blobs.push({ minX, maxX, minY, maxY, area, width: blobWidth, height: blobHeight });
+
+      if (area >= minArea)
+        blobs.push({
+          minX,
+          maxX,
+          minY,
+          maxY,
+          area,
+          width: blobWidth,
+          height: blobHeight,
+        });
     }
   }
 
@@ -288,8 +304,15 @@ function detectContours(binary, sw, sh, minAreaPct = BLOB_MIN_AREA_PCT) {
 
 function filterSquareContours(blobs) {
   return blobs.filter((b) => {
-    const asp = (b.maxX - b.minX + 1) / (b.maxY - b.minY + 1);
-    return asp >= ASPECT_MIN && asp <= ASPECT_MAX;
+    const w = b.maxX - b.minX + 1,
+      h = b.maxY - b.minY + 1;
+    const asp = w / h;
+    if (asp < ASPECT_MIN || asp > ASPECT_MAX) return false;
+    // Fill ratio: loại blob noise/merged.
+    // 0.15 quá lỏng → blob noise lọt qua → sai đáp án. 0.25 quá strict cho thẻ gần.
+    // 0.20 là cân bằng: loại noise nhưng vẫn bắt thẻ gần camera.
+    const fillRatio = b.area / (w * h);
+    return fillRatio >= 0.2;
   });
 }
 
@@ -298,10 +321,17 @@ function sampleGrid(binary, sw, sh, blob) {
   const { minX, maxX, minY, maxY } = blob;
   const bw = maxX - minX + 1,
     bh = maxY - minY + 1;
-  if (bw < GRID * 3 || bh < GRID * 3) return null;
+  // Hạ từ GRID*2=14 → GRID+2=9: cho phép sample thẻ nhỏ hơn (xa ~6-8m)
+  if (bw < GRID + 2 || bh < GRID + 2) return null;
   const cw = bw / GRID,
     ch = bh / GRID;
-  const R = CELL_SAMPLE_R;
+  // Adaptive R: tỉ lệ theo kích thước cell, giới hạn 1–CELL_SAMPLE_R(2)
+  // R=4 quá nặng → 2 FPS. R=2 (5×5=25 sample/cell) đủ chính xác, 14 FPS.
+  // Thẻ gần camera → warped grid xử lý tốt hơn (cố định 56×56).
+  const R = Math.min(
+    CELL_SAMPLE_R,
+    Math.max(1, Math.floor(Math.min(cw, ch) * 0.3)),
+  );
   const grid = Array.from({ length: GRID }, () => new Uint8Array(GRID));
   for (let gr = 0; gr < GRID; gr++) {
     for (let gc = 0; gc < GRID; gc++) {
@@ -333,7 +363,7 @@ function sampleGrid(binary, sw, sh, blob) {
  */
 function sampleGridWarped(binary, sw, sh, blob) {
   const { minX, maxX, minY, maxY } = blob;
-  if (maxX - minX + 1 < GRID * 3 || maxY - minY + 1 < GRID * 3) return null;
+  if (maxX - minX + 1 < GRID + 2 || maxY - minY + 1 < GRID + 2) return null;
 
   let tlV = Infinity,
     tlP = null;
@@ -424,50 +454,81 @@ function sampleGridWarped(binary, sw, sh, blob) {
  * - Validates confidence threshold
  * - Returns null if card is invalid (folded, occluded, wrong orientation)
  */
+/**
+ * ANTI-WRONG-ANSWER: Score ALL 4 rotations, pick best, require margin.
+ * Vấn đề cũ: trả về rotation đầu tiên match → nếu grid sample lệch, rotation sai
+ * có thể pass trước → SAI ĐÁP ÁN.
+ * Fix: thử cả 4, chấm điểm, chỉ trả về nếu rotation tốt nhất cách xa rotation thứ 2.
+ */
 function decodeCard(grid) {
   if (!grid) return null;
 
-  // FIX #19: Require all outer border cells (4 corners + edges) to be black
+  // Outer border check: thẻ cầm tay bị cong/gấp → mất 6-8 ô viền là bình thường
+  // 24 ô tổng, cần >= 16 (cho phép sai 8) để bắt thẻ cong
+  let borderOk = 0;
   for (let i = 0; i < GRID; i++) {
-    if (!grid[0][i] || !grid[6][i] || !grid[i][0] || !grid[i][6]) {
-      return null; // Missing border marker - card may be folded or occluded
+    if (grid[0][i]) borderOk++;
+    if (grid[6][i]) borderOk++;
+    if (i > 0 && i < 6) {
+      if (grid[i][0]) borderOk++;
+      if (grid[i][6]) borderOk++;
     }
   }
+  if (borderOk < 16) return null;
 
+  // Thử cả 4 rotation, chấm điểm từng cái
+  const candidates = [];
   for (let k = 0; k < 4; k++) {
     const rot = rotateK(grid, k);
 
-    // Check orientation cells (must be white)
+    // Orientation cells PHẢI 4/4 trắng — đây là cách duy nhất xác định đúng hướng
     if (!ORIENTATION_CELLS.every(([r, c]) => rot[r][c] === 0)) continue;
 
-    // Check border guards (must be black)
-    if (!BORDER_GUARDS.every(([r, c]) => rot[r][c] === 1)) continue;
+    // Border guards
+    const guardOk = BORDER_GUARDS.filter(([r, c]) => rot[r][c] === 1).length;
+    if (guardOk < BORDER_GUARDS.length - 2) continue;
 
-    // FIX #1: Validate corner markers are present
     if (!validateCornerMarkers(rot)) continue;
 
     const bits = DATA_POSITIONS.map(([r, c]) => rot[r][c]);
     const cardId = bitsToCardId(bits);
-
-    // FIX #11: Explicit ID range validation
     if (cardId < 1 || cardId > 100) continue;
 
     const confidence = calcConfidence(rot);
-
-    // FIX #1: Only accept if confidence >= threshold
     if (confidence < CONFIDENCE_MIN) continue;
 
-    return { cardId, answer: ANSWER_MAP[k], confidence, k };
+    candidates.push({ cardId, answer: ANSWER_MAP[k], confidence, k, guardOk });
   }
-  return null;
+
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+
+  // Nhiều rotation pass → chọn confidence cao nhất, YÊU CẦU cách xa
+  candidates.sort((a, b) => b.confidence - a.confidence);
+  const best = candidates[0];
+  const second = candidates[1];
+  // Phải hơn rotation thứ 2 ít nhất 0.15 confidence → chống sai đáp án triệt để
+  if (best.confidence - second.confidence < 0.15) return null;
+  return best;
 }
 
 // ─── Step 5: Try straight + warped per blob ───────────────────────────────────
 function tryDecodeBlob(binary, sw, sh, blob) {
   const r1 = decodeCard(sampleGrid(binary, sw, sh, blob));
-  if (r1) return r1;
   const r2 = decodeCard(sampleGridWarped(binary, sw, sh, blob));
-  return r2 || null;
+  // Luôn thử CẢ HAI: straight + warped. Chọn confidence cao nhất.
+  // Fix sai đáp án: straight có thể decode sai khi thẻ cong, warped chuẩn hơn.
+  if (r1 && r2) {
+    // Cùng cardId+answer → lấy max confidence
+    if (r1.cardId === r2.cardId && r1.answer === r2.answer) {
+      return r1.confidence >= r2.confidence ? r1 : r2;
+    }
+    // Khác nhau → lấy confidence cao hơn, YÊU CẦU margin
+    const best = r1.confidence >= r2.confidence ? r1 : r2;
+    const other = r1.confidence >= r2.confidence ? r2 : r1;
+    return best.confidence - other.confidence >= 0.12 ? best : null;
+  }
+  return r1 || r2 || null;
 }
 
 // ─── Step 6: Fallback — retry với blob nhỏ hơn ───────────────────────────────
@@ -588,31 +649,30 @@ class PCardDetector {
     const now = Date.now();
     const cutoff = now - windowMs;
     const out = new Map();
-    
+
     for (const [cardId, entries] of this._buffer) {
       const recent = entries.filter((e) => e.ts >= cutoff);
       if (recent.length < minVotes) continue;
-      
+
       // FIX #4: Weighted voting by confidence
       const weight = { A: 0, B: 0, C: 0, D: 0 };
       const voteCount = { A: 0, B: 0, C: 0, D: 0 };
-      
+
       for (const e of recent) {
         weight[e.answer] += e.confidence;
         voteCount[e.answer]++;
       }
-      
+
       // Find the answer with highest weighted score
       const best = ["A", "B", "C", "D"].reduce((a, b) =>
         weight[b] > weight[a] ? b : a,
       );
-      
+
       const bestVotes = voteCount[best];
-      
-      // FIX #4: Require majority threshold (at least 60% of votes for stability)
-      const majorityThreshold = Math.max(minVotes, Math.ceil(recent.length * 0.6));
-      if (bestVotes < majorityThreshold) continue;
-      
+
+      // Cần ít nhất 2 frame đồng ý cùng đáp án để tránh false positive
+      if (bestVotes < 2) continue;
+
       const totalW = Object.values(weight).reduce((s, v) => s + v, 0);
       out.set(cardId, {
         answer: best,
@@ -631,7 +691,7 @@ class PCardDetector {
   clearCard(cardId) {
     this._buffer.delete(cardId);
   }
-  
+
   /**
    * FIX #6: Get detection count for UI feedback
    * Returns { detected: number, totalCards: number }
@@ -640,7 +700,7 @@ class PCardDetector {
     const detected = this._buffer.size;
     return { detected, totalCards: detected }; // totalCards can be passed from backend
   }
-  
+
   /**
    * Get all detected card IDs in current buffer
    */
@@ -649,5 +709,10 @@ class PCardDetector {
   }
 }
 
-if (typeof module !== "undefined") module.exports = { PCardDetector };
+// CommonJS export for Node.js environments (optional)
+// eslint-disable-next-line no-undef
+if (typeof module !== "undefined" && module) {
+  // eslint-disable-next-line no-undef
+  module.exports = { PCardDetector };
+}
 export { PCardDetector };

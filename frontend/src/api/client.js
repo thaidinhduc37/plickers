@@ -48,19 +48,37 @@ class ApiClient {
 
     let response = await fetch(url, config);
 
-    // Auto-refresh token nếu 401 (token hết hạn) hoặc 403 (không có token — HTTPBearer trả 403)
+    // On 401/403, clear token and redirect to login.
+    // Exception: /api/auth/me — let checkAuth() / ProtectedRoute handle it via React Router
+    // (avoids hard-redirect that wipes React state while scanner is running).
     if (
       (response.status === 401 || response.status === 403) &&
-      endpoint !== "/api/auth/login"
+      endpoint !== "/api/auth/login" &&
+      endpoint !== "/api/auth/me"
     ) {
-      const result = await this.login("btc", "rcv2024");
-      if (result.ok) {
-        headers["Authorization"] = `Bearer ${this.token}`;
-        response = await fetch(url, { ...options, headers });
+      this.setToken(null);
+      if (window.location.pathname !== "/login") {
+        window.location.href = "/login";
       }
+      return response;
     }
 
     return response;
+  }
+
+  /**
+   * Public request — KHÔNG redirect khi 401/403.
+   * Dùng cho /api/public/* để scan loop không bị gián đoạn khi token expire.
+   * Vẫn gửi token nếu có (backend public endpoint bỏ qua token).
+   */
+  async publicRequest(endpoint, options = {}) {
+    const headers = { "Content-Type": "application/json", ...options.headers };
+    // Gửi token nếu có — backend public endpoint sẽ bỏ qua hoặc dùng để auth
+    if (this.token) {
+      headers["Authorization"] = `Bearer ${this.token}`;
+    }
+    const url = `${API_BASE}${endpoint}`;
+    return fetch(url, { ...options, headers });
   }
 
   async get(endpoint) {
@@ -129,7 +147,7 @@ class ApiClient {
       }
       const err = await this.json(res);
       return { ok: false, error: err?.detail || "Sai tài khoản hoặc mật khẩu" };
-    } catch (e) {
+    } catch {
       return { ok: false, error: "Không thể kết nối máy chủ" };
     }
   }
@@ -274,11 +292,13 @@ class ApiClient {
 
   /**
    * Thêm nhiều câu hỏi cùng lúc
+   * BUG3 FIX: Endpoint đã chuyển từ /api/contests/{id}/questions/bulk
+   *           sang /api/banks/{bank_id}/questions/bulk
    * questions: [{order_index, text, option_a, option_b, option_c, option_d, correct_answer, time_limit_sec}]
    */
-  async bulkAddQuestions(contestId, questions) {
+  async bulkAddQuestions(bankId, questions) {
     const res = await this.post(
-      `/api/contests/${contestId}/questions/bulk`,
+      `/api/banks/${bankId}/questions/bulk`,
       questions,
     );
     await this.assertOk(res);
@@ -391,6 +411,15 @@ class ApiClient {
     return res.json();
   }
 
+  /** Loại bỏ câu hiện tại, thay bằng câu dự phòng */
+  async useBackupQuestion(questionId) {
+    const res = await this.post("/api/session/use-backup", {
+      question_id: questionId,
+    });
+    await this.assertOk(res);
+    return res.json();
+  }
+
   /** Kết thúc phiên thi */
   async endSession() {
     const res = await this.post("/api/session/end");
@@ -440,31 +469,71 @@ class ApiClient {
   // ═══════════════════════════════════════════════════════════════════════════
   // PUBLIC API (cho Mobile Scanner - Không auth)
   // ═══════════════════════════════════════════════════════════════════════════
+  // PUBLIC API (cho Scanner Page sau khi đăng nhập - Không cần token trong scan loop)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async getPublicActiveSession() {
+    try {
+      const res = await this.publicRequest("/api/public/session/active", {
+        method: "GET",
+      });
+      if (res.status === 404) return null;
+      if (!res.ok) return null;
+      return res.json();
+    } catch {
+      return null;
+    }
+  }
 
   async getPublicSession(sessionId) {
-    const res = await this.get(`/api/public/session/${sessionId}`);
-    await this.assertOk(res);
-    return res.json();
+    try {
+      const res = await this.publicRequest(`/api/public/session/${sessionId}`, {
+        method: "GET",
+      });
+      if (!res.ok) return null;
+      return res.json();
+    } catch {
+      return null;
+    }
   }
 
   async getPublicContestants(sessionId) {
-    const res = await this.get(`/api/public/session/${sessionId}/contestants`);
-    await this.assertOk(res);
-    return res.json();
+    try {
+      const res = await this.publicRequest(
+        `/api/public/session/${sessionId}/contestants`,
+        { method: "GET" },
+      );
+      if (!res.ok) return [];
+      return res.json();
+    } catch {
+      return [];
+    }
   }
 
   async submitPublicScan(sessionId, results) {
-    const res = await this.post(`/api/public/session/${sessionId}/scan`, {
-      session_id: sessionId,
-      results,
-    });
-    await this.assertOk(res);
-    return res.json();
+    try {
+      const res = await this.publicRequest(
+        `/api/public/session/${sessionId}/scan`,
+        {
+          method: "POST",
+          body: JSON.stringify({ session_id: sessionId, results }),
+        },
+      );
+      if (!res.ok) return {};
+      return await res.json().catch(() => ({}));
+    } catch {
+      return {};
+    }
   }
 
   async publicRevealAnswer(sessionId) {
-    const res = await this.post(`/api/public/session/${sessionId}/reveal`, {});
-    await this.assertOk(res);
+    const res = await this.publicRequest(
+      `/api/public/session/${sessionId}/reveal`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    if (!res.ok) {
+      throw new Error(`Failed to reveal answer: ${res.status}`);
+    }
     return res.json();
   }
 
@@ -555,9 +624,12 @@ class WebSocketManager {
     if (!this._shouldConnect) return;
 
     const url = `${WS_BASE}/ws/contest/${this._sessionId}`;
-    this._ws = new WebSocket(url);
+    // Keep a local reference so stale handlers from a replaced/closed WS are ignored.
+    const ws = new WebSocket(url);
+    this._ws = ws;
 
-    this._ws.onopen = () => {
+    ws.onopen = () => {
+      if (this._ws !== ws) return; // stale — a newer connection already took over
       this.connected = true;
       this._reconnectDelay = 2000;
       this._emit("__connected", {});
@@ -569,7 +641,8 @@ class WebSocketManager {
       }, 25000);
     };
 
-    this._ws.onmessage = (event) => {
+    ws.onmessage = (event) => {
+      if (this._ws !== ws) return; // stale
       try {
         const { event: eventType, data } = JSON.parse(event.data);
         this._emit(eventType, data);
@@ -578,7 +651,8 @@ class WebSocketManager {
       }
     };
 
-    this._ws.onclose = () => {
+    ws.onclose = () => {
+      if (this._ws !== ws) return; // stale — don't emit __disconnected or schedule reconnect for old WS
       this.connected = false;
       this._emit("__disconnected", {});
       clearInterval(this._pingTimer);
@@ -587,8 +661,9 @@ class WebSocketManager {
       }
     };
 
-    this._ws.onerror = () => {
-      this._ws?.close();
+    ws.onerror = () => {
+      if (this._ws !== ws) return; // stale
+      ws.close();
     };
   }
 

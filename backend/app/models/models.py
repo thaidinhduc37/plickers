@@ -8,6 +8,17 @@ from sqlalchemy.orm import relationship
 from app.core.database import Base
 
 
+# ─── Admin User Model for Authentication ────────────────────────────────────────
+class AdminUser(Base):
+    """Admin user for authentication."""
+    __tablename__ = "admins"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ─── Enums ────────────────────────────────────────────────────────────────────
 
 class ContestantStatus(str, enum.Enum):
@@ -42,6 +53,7 @@ class QuestionBank(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(200), nullable=False, index=True)
     description = Column(Text, nullable=True)
+    created_by = Column(String(50), nullable=True, index=True)  # Username of creator (null for Admin/system)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     questions = relationship("Question", back_populates="bank",
@@ -58,6 +70,7 @@ class Contest(Base):
     description = Column(Text, nullable=True)
     bank_id = Column(Integer, ForeignKey("question_banks.id", ondelete="SET NULL"), nullable=True)
     max_contestants = Column(Integer, nullable=True)  # Số lượng thí sinh tối đa (NULL = không giới hạn)
+    created_by = Column(String(50), nullable=True, index=True)  # Username of creator (null for Admin/system)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     bank = relationship("QuestionBank", back_populates="contests")
@@ -102,6 +115,7 @@ class Contestant(Base):
         index=True
     )
     eliminated_at_question = Column(Integer, nullable=True)
+    correct_count = Column(Integer, default=0, nullable=False)  # Số câu trả lời đúng — dùng cho xếp hạng
     created_at = Column(DateTime, default=datetime.utcnow)
 
     contest = relationship("Contest", back_populates="contestants")
@@ -134,6 +148,10 @@ class Session(Base):
     current_question_index = Column(Integer, default=0)
     started_at = Column(DateTime, default=datetime.utcnow)
     ended_at = Column(DateTime, nullable=True)
+    # Câu dự phòng: {str(question_index): backup_question_id}
+    question_overrides = Column(JSON, default=dict, nullable=False)
+    # Danh sách ID câu dự phòng đã sử dụng
+    used_backup_ids = Column(JSON, default=list, nullable=False)
 
     contest = relationship("Contest", back_populates="sessions")
     responses = relationship("Response", back_populates="session", cascade="all, delete-orphan")

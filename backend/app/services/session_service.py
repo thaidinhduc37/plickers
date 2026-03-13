@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import List, Optional, Tuple, Set
 from sqlalchemy.orm import Session as DBSession
 from fastapi import HTTPException
+import sqlalchemy
 
 from app.models.models import (
     Session, Contest, Contestant, Response, SessionLog,
@@ -9,21 +10,16 @@ from app.models.models import (
 )
 from app.services.contestant_service import reset_contestants_for_session, reset_contestants_at_question
 
-
-# ─── Scan State Machine (FIX #3) ───────────────────────────────────────────────
-# States for scanning control:
-# - WAITING: Chờ MC bắt đầu quét
-# - SCANNING: Đang quét thẻ (chỉ accept frame khi ở state này)
-# - LOCKED: Đã khóa kết quả (không accept thêm)
-
-class ScanState:
-    WAITING = "waiting"
-    SCANNING = "scanning"
-    LOCKED = "locked"
+# ─── Application-level lock for SQLite compatibility ────────────────────────────
+# FIX B7: with_for_update() is a no-op on SQLite, use threading.Lock as fallback
+import threading
+_reveal_lock = threading.Lock()
+_skip_lock = threading.Lock()
+_next_lock = threading.Lock()
+_retry_lock = threading.Lock()
 
 
-# In-memory store for scan state per session (reset on session end)
-_session_scan_state: dict[str, str] = {}
+# ─── In-memory scanned-IDs store per session/round ─────────────────────────────
 _session_scanned_ids: dict[str, Set[int]] = {}  # FIX #5: Track scanned IDs per round
 
 
@@ -38,19 +34,8 @@ def _get_active_session(db: DBSession) -> Session:
     return s
 
 
-def get_scan_state(session_id: str) -> str:
-    """FIX #3: Get current scan state for session"""
-    return _session_scan_state.get(session_id, ScanState.WAITING)
-
-
-def set_scan_state(session_id: str, state: str):
-    """FIX #3: Set scan state for session"""
-    _session_scan_state[session_id] = state
-
-
 def reset_scan_state(session_id: str):
-    """FIX #3, #10: Reset scan state and cleared data for new round"""
-    _session_scan_state[session_id] = ScanState.WAITING
+    """Reset scanned IDs for new round (called on next/retry/skip question)"""
     _session_scanned_ids[session_id] = set()
 
 
@@ -71,18 +56,44 @@ def clear_scanned_ids(session_id: str):
     _session_scanned_ids[session_id] = set()
 
 
-def _log(db: DBSession, session_id: int, event_type: LogEventType, data: dict = None):
+def _log(db: DBSession, session_id: str, event_type: LogEventType, data: dict = None):
     log = SessionLog(session_id=session_id, event_type=event_type, event_data=data or {})
     db.add(log)
 
 
+def _get_main_questions(session: Session) -> list:
+    """Get only main (non-backup) questions, sorted by order_index."""
+    if not session.contest or not session.contest.bank or not session.contest.bank.questions:
+        return []
+    return sorted(
+        [q for q in session.contest.bank.questions if not q.is_backup],
+        key=lambda q: q.order_index
+    )
+
+
 def _get_current_question(session: Session) -> Optional[Question]:
+    """Get the current question, respecting backup overrides."""
     if not session.contest or not session.contest.bank or not session.contest.bank.questions:
         return None
-    questions = sorted(session.contest.bank.questions, key=lambda q: q.order_index)
-    if session.current_question_index >= len(questions):
+    
+    # Check if there's a backup override for this index
+    overrides = session.question_overrides or {}
+    override_qid = overrides.get(str(session.current_question_index))
+    if override_qid:
+        for q in session.contest.bank.questions:
+            if q.id == override_qid:
+                return q
+    
+    # Normal: use main questions only
+    main_qs = _get_main_questions(session)
+    if session.current_question_index >= len(main_qs):
         return None
-    return questions[session.current_question_index]
+    return main_qs[session.current_question_index]
+
+
+def _count_main_questions(session: Session) -> int:
+    """Count only main (non-backup) questions."""
+    return len(_get_main_questions(session))
 
 
 def _count_active(db: DBSession, contest_id: int) -> int:
@@ -92,7 +103,7 @@ def _count_active(db: DBSession, contest_id: int) -> int:
     ).count()
 
 
-def _count_scanned(db: DBSession, session_id: int, question_id: int) -> int:
+def _count_scanned(db: DBSession, session_id: str, question_id: int) -> int:
     return db.query(Response).filter(
         Response.session_id == session_id,
         Response.question_id == question_id
@@ -107,6 +118,11 @@ def start_session(db: DBSession, contest_id: int) -> Session:
         raise HTTPException(status_code=404, detail="Cuộc thi không tồn tại")
     if not contest.bank or not contest.bank.questions:
         raise HTTPException(status_code=400, detail="Cuộc thi chưa chọn ngân hàng câu hỏi hoặc ngân hàng trống")
+    
+    # Kiểm tra có câu hỏi chính (không phải dự phòng)
+    main_qs = [q for q in contest.bank.questions if not q.is_backup]
+    if not main_qs:
+        raise HTTPException(status_code=400, detail="Ngân hàng câu hỏi chưa có câu hỏi chính (chỉ có câu dự phòng)")
 
     # Đóng session cũ nếu còn
     old = db.query(Session).filter(
@@ -142,7 +158,7 @@ def start_session(db: DBSession, contest_id: int) -> Session:
 def get_active_session_info(db: DBSession) -> dict:
     session = _get_active_session(db)
     current_q = _get_current_question(session)
-    total_q = len(session.contest.bank.questions) if session.contest.bank else 0
+    total_q = _count_main_questions(session)
     active = _count_active(db, session.contest_id)
     scanned = _count_scanned(db, session.id, current_q.id) if current_q else 0
 
@@ -155,6 +171,8 @@ def get_active_session_info(db: DBSession) -> dict:
         "current_question": current_q,
         "active_contestants": active,
         "scanned_count": scanned,
+        "used_backup_ids": session.used_backup_ids or [],
+        "question_overrides": session.question_overrides or {},
     }
 
 
@@ -162,19 +180,23 @@ def get_active_session_info(db: DBSession) -> dict:
 
 def submit_scan_results(
     db: DBSession,
-    session_id: str,  # Changed from int to str to match Session ID type
+    session_id: str,  # str vì Session.id là String(6) trong models.py
     results: List[dict]
 ) -> Tuple[List[dict], dict]:
     """
     Nhận batch kết quả quét từ CV Service.
     Trả về: (danh sách kết quả đã xử lý, vote_snapshot)
     
-    FIX #3: Only accept scans when scan_state == SCANNING
+    BUG1 FIX: Bỏ scan_state gate — session.state là nguồn sự thật duy nhất.
+    BUG5 FIX: Giữ session_id là str (Session.id = String(6), không phải int).
     FIX #5: Prevent duplicate detection per ID per round
     FIX #8, #9: Filter out eliminated contestants
     FIX #11: Validate ID range (1-100)
     FIX #12: Detect and handle duplicate card IDs
     """
+    # BUG5 FIX: ép str để đảm bảo key dict nhất quán (session.id là String(6))
+    session_id = str(session_id)
+
     session = db.query(Session).filter(Session.id == session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session không tồn tại")
@@ -184,11 +206,8 @@ def submit_scan_results(
             detail=f"Session đang ở trạng thái '{session.state}', không nhận đáp án"
         )
 
-    # FIX #3: Check scan state machine - only accept when SCANNING
-    scan_state = get_scan_state(session_id)
-    if scan_state != ScanState.SCANNING:
-        # Return empty results if not in scanning state
-        return [], {"A": 0, "B": 0, "C": 0, "D": 0, "total": 0}
+    # BUG1 FIX: Đã xóa scan_state gate (luôn WAITING vì không có endpoint set "scanning").
+    # session.state == scanning từ DB là điều kiện đủ để nhận đáp án.
 
     current_q = _get_current_question(session)
     if not current_q:
@@ -309,8 +328,20 @@ def reveal_answer(db: DBSession) -> Tuple[dict, List[Contestant]]:
     Hiện đáp án đúng + tự động loại người trả lời sai.
     Trả về: (vote_result, danh sách bị loại)
     
-    FIX #1: Sử dụng row-level lock để tránh race condition
+    FIX B7: Check SQLite and use application-level lock as fallback
     """
+    # FIX B7: Check if using SQLite and warn/error
+    if db.bind.dialect.name == "sqlite":
+        # Use application-level lock for SQLite
+        with _reveal_lock:
+            return _reveal_answer_internal(db)
+    else:
+        # PostgreSQL - use row-level lock
+        return _reveal_answer_internal(db)
+
+
+def _reveal_answer_internal(db: DBSession) -> Tuple[dict, List[Contestant]]:
+    """Internal implementation for reveal_answer"""
     # Lock session row với condition check
     session = db.query(Session).filter(
         Session.state == SessionState.scanning
@@ -358,6 +389,8 @@ def reveal_answer(db: DBSession) -> Tuple[dict, List[Contestant]]:
             c.status = ContestantStatus.eliminated
             c.eliminated_at_question = session.current_question_index
             eliminated.append(c)
+        elif c.id in answered_correctly:
+            c.correct_count = (c.correct_count or 0) + 1
 
     db.commit()
 
@@ -394,9 +427,19 @@ def next_question(db: DBSession) -> dict:
     """
     Chuyển sang câu hỏi tiếp theo.
     
-    FIX #1: Sử dụng row-level lock để tránh race condition
+    FIX B7: Check SQLite and use application-level lock as fallback
     FIX #10: Reset scan state and cleared data for new round
     """
+    # FIX B7: Check if using SQLite
+    if db.bind.dialect.name == "sqlite":
+        with _next_lock:
+            return _next_question_internal(db)
+    else:
+        return _next_question_internal(db)
+
+
+def _next_question_internal(db: DBSession) -> dict:
+    """Internal implementation for next_question"""
     # Lock session row với condition check
     session = db.query(Session).filter(
         Session.state == SessionState.revealed
@@ -411,12 +454,11 @@ def next_question(db: DBSession) -> dict:
             detail=f"Session đang ở trạng thái '{active.state}', phải ở trạng thái 'revealed' để chuyển câu"
         )
 
-    total = len(session.contest.bank.questions) if session.contest.bank else 0
+    total = _count_main_questions(session)
     next_index = session.current_question_index + 1
 
     if next_index >= total:
         raise HTTPException(status_code=400, detail="Đã hết câu hỏi, hãy kết thúc phiên thi")
-
     session.current_question_index = next_index
     session.state = SessionState.scanning
     db.commit()
@@ -449,8 +491,19 @@ def retry_question(db: DBSession) -> dict:
     - Xóa responses của câu hiện tại.
     - Đặt lại state về scanning.
     
+    FIX B7: Check SQLite and use application-level lock as fallback
     FIX #10: Reset scan state machine for retry
     """
+    # FIX B7: Check if using SQLite
+    if db.bind.dialect.name == "sqlite":
+        with _retry_lock:
+            return _retry_question_internal(db)
+    else:
+        return _retry_question_internal(db)
+
+
+def _retry_question_internal(db: DBSession) -> dict:
+    """Internal implementation for retry_question"""
     session = db.query(Session).filter(
         Session.state == SessionState.revealed
     ).with_for_update().first()
@@ -466,6 +519,19 @@ def retry_question(db: DBSession) -> dict:
     
     current_index = session.current_question_index
     
+    # Decrement correct_count for contestants who answered correctly on this question
+    current_q = _get_current_question(session)
+    if current_q:
+        correct_responses = db.query(Response).filter(
+            Response.session_id == session.id,
+            Response.question_id == current_q.id,
+            Response.answer == current_q.correct_answer
+        ).all()
+        correct_ids = {r.contestant_id for r in correct_responses}
+        if correct_ids:
+            for c in db.query(Contestant).filter(Contestant.id.in_(correct_ids)).all():
+                c.correct_count = max(0, (c.correct_count or 0) - 1)
+    
     # Reset người chơi tại câu hiện tại
     restored_count = reset_contestants_at_question(db, session.contest_id, current_index)
     
@@ -475,8 +541,6 @@ def retry_question(db: DBSession) -> dict:
     
     # FIX #10: Reset scan state machine for retry
     reset_scan_state(session.id)
-    
-    current_q = _get_current_question(session)
     
     _log(db, session.id, LogEventType.question_opened, {
         "question_index": current_index,
@@ -488,7 +552,7 @@ def retry_question(db: DBSession) -> dict:
     
     return {
         "current_question_index": current_index,
-        "total_questions": len(session.contest.bank.questions) if session.contest.bank else 0,
+        "total_questions": _count_main_questions(session),
         "current_question": current_q,
         "active_contestants": _count_active(db, session.contest_id),
         "restored_contestants": restored_count,
@@ -502,7 +566,19 @@ def skip_question(db: DBSession) -> dict:
     Bỏ qua câu hỏi hiện tại (không tính điểm).
     - Chuyển sang câu tiếp theo.
     - Không loại ai.
+    
+    FIX B7: Check SQLite and use application-level lock as fallback
     """
+    # FIX B7: Check if using SQLite
+    if db.bind.dialect.name == "sqlite":
+        with _skip_lock:
+            return _skip_question_internal(db)
+    else:
+        return _skip_question_internal(db)
+
+
+def _skip_question_internal(db: DBSession) -> dict:
+    """Internal implementation for skip_question"""
     session = db.query(Session).filter(
         Session.state.in_([SessionState.scanning, SessionState.revealed])
     ).with_for_update().first()
@@ -516,7 +592,7 @@ def skip_question(db: DBSession) -> dict:
             detail=f"Session đang ở trạng thái '{active.state}', phải ở trạng thái 'scanning' hoặc 'revealed' để bỏ qua"
         )
     
-    total = len(session.contest.bank.questions) if session.contest.bank else 0
+    total = _count_main_questions(session)
     next_index = session.current_question_index + 1
     
     if next_index >= total:
@@ -526,7 +602,10 @@ def skip_question(db: DBSession) -> dict:
     session.state = SessionState.scanning
     db.commit()
     db.refresh(session)
-    
+
+    # Bug E fix: reset scanned IDs so cards from skipped question are accepted in next question
+    reset_scan_state(session.id)
+
     current_q = _get_current_question(session)
     _log(db, session.id, LogEventType.question_opened, {
         "question_index": next_index,
@@ -540,6 +619,114 @@ def skip_question(db: DBSession) -> dict:
         "total_questions": total,
         "current_question": current_q,
         "active_contestants": _count_active(db, session.contest_id),
+    }
+
+
+# ─── Use Backup Question (Loại bỏ câu + thay bằng câu dự phòng) ─────────────
+_backup_lock = threading.Lock()
+
+
+def use_backup_question(db: DBSession, backup_question_id: int) -> dict:
+    """
+    Loại bỏ câu hiện tại, thay bằng câu dự phòng.
+    - Khôi phục thí sinh bị loại ở câu hiện tại (nếu đã reveal)
+    - Xoá responses của câu hiện tại
+    - Ghi nhận override: câu hiện tại sẽ dùng backup question
+    - Đánh dấu backup đã sử dụng
+    """
+    if db.bind.dialect.name == "sqlite":
+        with _backup_lock:
+            return _use_backup_question_internal(db, backup_question_id)
+    else:
+        return _use_backup_question_internal(db, backup_question_id)
+
+
+def _use_backup_question_internal(db: DBSession, backup_question_id: int) -> dict:
+    session = db.query(Session).filter(
+        Session.state.in_([SessionState.scanning, SessionState.revealed])
+    ).with_for_update().first()
+
+    if not session:
+        active = _get_active_session(db)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Session đang ở trạng thái '{active.state}', không thể thay câu dự phòng"
+        )
+
+    # Validate backup question
+    backup_q = db.query(Question).filter(Question.id == backup_question_id).first()
+    if not backup_q:
+        raise HTTPException(status_code=404, detail="Câu dự phòng không tồn tại")
+    if not backup_q.is_backup:
+        raise HTTPException(status_code=400, detail="Câu này không phải câu dự phòng")
+
+    # Check if already used
+    used_ids = list(session.used_backup_ids or [])
+    if backup_question_id in used_ids:
+        raise HTTPException(status_code=400, detail="Câu dự phòng này đã được sử dụng")
+
+    current_index = session.current_question_index
+    current_q = _get_current_question(session)
+
+    # Decrement correct_count for contestants who answered correctly on this question
+    if current_q:
+        correct_responses = db.query(Response).filter(
+            Response.session_id == session.id,
+            Response.question_id == current_q.id,
+            Response.answer == current_q.correct_answer
+        ).all()
+        correct_ids = {r.contestant_id for r in correct_responses}
+        if correct_ids:
+            for c in db.query(Contestant).filter(Contestant.id.in_(correct_ids)).all():
+                c.correct_count = max(0, (c.correct_count or 0) - 1)
+
+    # Restore contestants eliminated at this question (if already revealed)
+    if session.state == SessionState.revealed and current_q:
+        restored_count = reset_contestants_at_question(db, session.contest_id, current_index)
+    else:
+        restored_count = 0
+
+    # Delete responses for current question
+    if current_q:
+        db.query(Response).filter(
+            Response.session_id == session.id,
+            Response.question_id == current_q.id
+        ).delete()
+
+    # Record override
+    overrides = dict(session.question_overrides or {})
+    overrides[str(current_index)] = backup_question_id
+    session.question_overrides = overrides
+
+    # Mark backup as used
+    used_ids.append(backup_question_id)
+    session.used_backup_ids = used_ids
+
+    # Reset to scanning state
+    session.state = SessionState.scanning
+    db.commit()
+    db.refresh(session)
+
+    reset_scan_state(session.id)
+
+    new_q = _get_current_question(session)
+    _log(db, session.id, LogEventType.question_opened, {
+        "question_index": current_index,
+        "question_id": new_q.id if new_q else None,
+        "action": "use_backup",
+        "backup_question_id": backup_question_id,
+        "restored_contestants": restored_count,
+    })
+    db.commit()
+
+    return {
+        "current_question_index": current_index,
+        "total_questions": _count_main_questions(session),
+        "current_question": new_q,
+        "active_contestants": _count_active(db, session.contest_id),
+        "restored_contestants": restored_count,
+        "used_backup_ids": session.used_backup_ids,
+        "question_overrides": session.question_overrides,
     }
 
 
@@ -575,7 +762,7 @@ def end_session(db: DBSession) -> dict:
 
 # ─── Get Results ──────────────────────────────────────────────────────────────
 
-def get_current_results(db: DBSession, session_id: int, reveal: bool = False) -> dict:
+def get_current_results(db: DBSession, session_id: str, reveal: bool = False) -> dict:
     session = db.query(Session).filter(Session.id == session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session không tồn tại")
@@ -611,7 +798,7 @@ def get_current_results(db: DBSession, session_id: int, reveal: bool = False) ->
     }
 
 
-def get_session_summary(db: DBSession, session_id: int) -> dict:
+def get_session_summary(db: DBSession, session_id: str) -> dict:
     session = db.query(Session).filter(Session.id == session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session không tồn tại")
@@ -621,23 +808,26 @@ def get_session_summary(db: DBSession, session_id: int) -> dict:
         Contestant.status == ContestantStatus.winner
     ).all()
 
+    # FIX B3: Use correct relationship - questions are in bank, not directly in contest
     per_question = []
-    for q in sorted(session.contest.questions, key=lambda x: x.order_index):
-        responses = db.query(Response).filter(
-            Response.session_id == session_id,
-            Response.question_id == q.id
-        ).all()
-        votes = {"A": 0, "B": 0, "C": 0, "D": 0}
-        for r in responses:
-            if r.answer in votes:
-                votes[r.answer] += 1
-        per_question.append({
-            "question_index": q.order_index,
-            "question_text": q.text,
-            "correct_answer": q.correct_answer,
-            "votes": votes,
-            "total_answered": len(responses),
-        })
+    if session.contest and session.contest.bank:
+        questions = sorted(session.contest.bank.questions, key=lambda x: x.order_index)
+        for q in questions:
+            responses = db.query(Response).filter(
+                Response.session_id == session_id,
+                Response.question_id == q.id
+            ).all()
+            votes = {"A": 0, "B": 0, "C": 0, "D": 0}
+            for r in responses:
+                if r.answer in votes:
+                    votes[r.answer] += 1
+            per_question.append({
+                "question_index": q.order_index,
+                "question_text": q.text,
+                "correct_answer": q.correct_answer,
+                "votes": votes,
+                "total_answered": len(responses),
+            })
 
     return {
         "session_id": session_id,

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.deps import get_current_user_or_auto
 from app.schemas.schemas import ContestantOut, ContestantStatusUpdate
 from app.models.models import ContestantStatus
 from app.services import contestant_service, session_service
@@ -11,7 +11,7 @@ from app.ws.manager import ws_manager
 from app.services.contestant_service import delete_contestant
 
 router = APIRouter(prefix="/api/contestants", tags=["Contestants"])
-auth = Depends(get_current_user)
+auth = Depends(get_current_user_or_auto)
 
 
 @router.post("/import/{contest_id}", response_model=List[ContestantOut])
@@ -83,10 +83,6 @@ def remove_contestant(contestant_id: int, db: Session = Depends(get_db), _=auth)
 @router.post("/reset/{contest_id}")
 def reset_contestants(contest_id: int, db: Session = Depends(get_db), _=auth):
     """Reset toàn bộ thí sinh của cuộc thi về trạng thái active."""
-    from app.models.models import Contestant
-    db.query(Contestant).filter(Contestant.contest_id == contest_id).update(
-        {"status": ContestantStatus.active},
-        synchronize_session=False
-    )
-    db.commit()
+    from app.services.contestant_service import reset_contestants_for_session
+    reset_contestants_for_session(db, contest_id)
     return {"reset": True}

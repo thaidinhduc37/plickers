@@ -3,11 +3,16 @@ db/migrate.py — Migration thủ công để sửa schema:
   1. Drop UNIQUE index cũ trên contestants.card_id (global unique → per-contest unique)
   2. Thêm UNIQUE constraint (card_id, contest_id) nếu chưa có
   3. Thêm cascade delete cho FK của sessions và contestants
+  4. Tạo bảng admins và seed admin user
 
 Chạy: python -m db.migrate
 """
 from app.core.database import engine
+from app.core.config import settings
+from app.models.models import AdminUser
 from sqlalchemy import text
+from sqlalchemy.orm import Session
+from app.services.auth_service import get_password_hash
 
 def run_migrations():
     with engine.connect() as conn:
@@ -125,6 +130,103 @@ def run_migrations():
                 print(f"  Warning: {e}")
 
         print("\n[OK] Migration complete!")
+
+        # Add question_overrides and used_backup_ids columns to sessions
+        print("\n  Adding backup question columns to sessions...")
+        with Session(engine) as db:
+            from sqlalchemy import inspect
+            inspector = inspect(engine)
+            cols_sessions = [c["name"] for c in inspector.get_columns("sessions")]
+
+            for col_name, col_sql in [
+                ("question_overrides", "ALTER TABLE sessions ADD COLUMN question_overrides TEXT DEFAULT '{}'"),
+                ("used_backup_ids", "ALTER TABLE sessions ADD COLUMN used_backup_ids TEXT DEFAULT '[]'"),
+            ]:
+                if col_name not in cols_sessions:
+                    print(f"  Adding sessions.{col_name} column...")
+                    try:
+                        conn.execute(text(col_sql))
+                        conn.commit()
+                        print("  [OK] Done")
+                    except Exception as e:
+                        print(f"  Warning: {e}")
+                else:
+                    print(f"  [OK] sessions.{col_name} already exists")
+
+        # Add correct_count column to contestants
+        print("\n  Adding correct_count column to contestants...")
+        with Session(engine) as db:
+            from sqlalchemy import inspect
+            inspector = inspect(engine)
+            cols_conts = [c["name"] for c in inspector.get_columns("contestants")]
+            if "correct_count" not in cols_conts:
+                try:
+                    conn.execute(text("ALTER TABLE contestants ADD COLUMN correct_count INTEGER DEFAULT 0"))
+                    conn.commit()
+                    print("  [OK] Done")
+                except Exception as e:
+                    print(f"  Warning: {e}")
+            else:
+                print("  [OK] correct_count already exists")
+
+        # Add created_by columns to question_banks and contests
+        print("\n  Adding created_by columns...")
+        with Session(engine) as db:
+            from app.models.models import QuestionBank, Contest
+            from sqlalchemy import inspect
+            
+            inspector = inspect(engine)
+            cols_banks = [c["name"] for c in inspector.get_columns("question_banks")]
+            cols_contests = [c["name"] for c in inspector.get_columns("contests")]
+            
+            if "created_by" not in cols_banks:
+                print("  Adding question_banks.created_by column...")
+                try:
+                    conn.execute(text(
+                        "ALTER TABLE question_banks ADD COLUMN created_by VARCHAR(50) NULL"
+                    ))
+                    conn.commit()
+                    print("  [OK] Done")
+                except Exception as e:
+                    print(f"  Warning: {e}")
+            else:
+                print("  [OK] question_banks.created_by already exists")
+            
+            if "created_by" not in cols_contests:
+                print("  Adding contests.created_by column...")
+                try:
+                    conn.execute(text(
+                        "ALTER TABLE contests ADD COLUMN created_by VARCHAR(50) NULL"
+                    ))
+                    conn.commit()
+                    print("  [OK] Done")
+                except Exception as e:
+                    print(f"  Warning: {e}")
+            else:
+                print("  [OK] contests.created_by already exists")
+
+        # Create admins table and seed admin user
+        print("\n  Setting up admins table...")
+        with Session(engine) as db:
+            # Import models to ensure tables are created
+            from app.models.models import Base
+            Base.metadata.create_all(engine)
+            
+            # Check if admin exists
+            admin = db.query(AdminUser).filter(AdminUser.username == settings.ADMIN_USERNAME).first()
+            if not admin:
+                print(f"  Creating admin user: {settings.ADMIN_USERNAME}")
+                admin = AdminUser(
+                    username=settings.ADMIN_USERNAME,
+                    hashed_password=get_password_hash(settings.ADMIN_PASSWORD)
+                )
+                db.add(admin)
+                db.commit()
+                print("  [OK] Admin user created")
+            else:
+                print("  [OK] Admin user already exists")
+        
+        print("\n[OK] Auth setup complete!")
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ import {
     Trophy, Plus, X, UserPlus, Trash2, Search,
     Crown, XCircle, CheckCircle2, Hash,
     AlertTriangle, RefreshCw, QrCode, Printer,
-    Users, BookOpen, Download, Loader2,
+    Users, BookOpen, Download, Loader2, Medal,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -326,37 +326,92 @@ function AddDialog({ event, nextCardId, onClose, onSave }) {
     const [raw, setRaw] = useState('');
     const lines = raw.split('\n').filter(l => l.trim());
     return (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-                <div className="flex items-center justify-between px-6 py-4 border-b">
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-start justify-center pt-8 p-4 overflow-y-auto">
+            <div className="bg-white rounded-lg shadow-lg w-full max-w-3xl max-h-[92vh] overflow-hidden flex flex-col">
+                {/* Header */}
+                <div className="px-6 py-4 border-b border-slate-200 shrink-0 flex items-center justify-between">
                     <div>
-                        <h2 className="text-lg font-bold">Thêm thí sinh</h2>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                            {event.title} · Thẻ tiếp theo: #{String(nextCardId).padStart(2, '0')}
+                        <h2 className="text-lg font-bold text-slate-900">Thêm thí sinh vào {event.title}</h2>
+                        <p className="text-xs text-slate-500 mt-1">
+                            Thẻ tiếp theo: #{String(nextCardId).padStart(2, '0')}
+                            {lines.length > 0 && ` → #${String(nextCardId + lines.length - 1).padStart(2, '0')}`}
                         </p>
                     </div>
-                    <button onClick={onClose} className="p-1.5 hover:bg-slate-100 rounded-lg">
+                    <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded transition-colors">
                         <X className="w-5 h-5 text-slate-400" />
                     </button>
                 </div>
-                <div className="px-6 py-5">
-                    <p className="text-xs text-slate-400 mb-2">
-                        Mỗi tên một dòng. Thẻ #{String(nextCardId).padStart(2, '0')}
-                        {lines.length > 0 && ` → #${String(nextCardId + lines.length - 1).padStart(2, '0')}`}.
-                    </p>
-                    <textarea autoFocus
-                        className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-yellow-300 resize-none font-mono"
-                        rows={8} placeholder={"Nguyễn Văn X\nTrần Thị Y"}
-                        value={raw} onChange={e => setRaw(e.target.value)} />
+
+                {/* Content: 2 columns */}
+                <div className="flex-1 flex overflow-hidden min-h-[600px]">
+                    {/* Left: Input section */}
+                    <div className="w-2/5 flex flex-col border-r border-slate-200 p-5 bg-white">
+                        <div className="mb-3">
+                            <h3 className="text-sm font-bold text-slate-900 mb-1">Nhập danh sách tên</h3>
+                            <p className="text-xs text-slate-600">
+                                Mỗi thí sinh một dòng. Hỗ trợ copy-paste từ Excel hoặc Word. Mỗi dòng chứa một tên sinh viên — hệ thống sẽ tự động gán số thẻ.
+                            </p>
+                        </div>
+                        <textarea autoFocus
+                            className="flex-1 border border-blue-300 rounded-lg px-3 py-3 text-sm outline-none resize-none font-sans focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all"
+                            placeholder={"Nguyễn Văn An\nTrần Thị Bình\nHoàng Văn C\nPhạm Thị D"}
+                            value={raw} onChange={e => setRaw(e.target.value)} />
+                        <p className="text-xs text-slate-400 mt-2">
+                            💡 Tip: Bạn cũng có thể dán dữ liệu từ spreadsheet
+                        </p>
+                    </div>
+
+                    {/* Right: Preview section */}
+                    <div className="w-3/5 flex flex-col p-5 bg-slate-50 border-l border-slate-200">
+                        <div className="mb-3">
+                            <h3 className="text-sm font-bold text-slate-900 mb-1">Xem trước danh sách</h3>
+                            <p className="text-xs text-slate-600">
+                                {lines.length === 0 ? 'Nhập tên để xem trước' : `${lines.length} thí sinh sẽ được thêm`}
+                            </p>
+                        </div>
+                        <div className="flex-1 overflow-y-auto">
+                            {lines.length === 0 ? (
+                                <div className="flex items-center justify-center h-full text-slate-400">
+                                    <div className="text-center">
+                                        <Users className="w-10 h-10 mx-auto mb-2 opacity-20" />
+                                        <p className="text-xs">Nhập tên để xem trước danh sách</p>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="border border-slate-200 rounded overflow-hidden bg-white">
+                                    <div className="grid grid-cols-2 gap-0 border-b border-slate-200 bg-slate-100">
+                                        <div className="px-4 py-2 text-xs font-bold text-slate-700">Thẻ</div>
+                                        <div className="px-4 py-2 text-xs font-bold text-slate-700 border-l border-slate-200">Họ và tên</div>
+                                    </div>
+                                    <div className="divide-y divide-slate-200">
+                                        {lines.map((name, idx) => (
+                                            <div key={idx} className="grid grid-cols-2 gap-0 hover:bg-yellow-50 transition-colors">
+                                                <div className="px-4 py-3 text-xs font-bold text-yellow-700">
+                                                    #{String(nextCardId + idx).padStart(2, '0')}
+                                                </div>
+                                                <div className="px-4 py-3 text-sm text-slate-800 border-l border-slate-200 font-semibold">
+                                                    {name}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
                 </div>
-                <div className="px-6 py-4 border-t flex justify-end gap-3">
+
+                {/* Footer */}
+                <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-3 shrink-0 bg-white">
                     <button onClick={onClose}
-                        className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-xl">Huỷ</button>
+                        className="px-5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 rounded transition-colors border border-slate-200">
+                        Huỷ
+                    </button>
                     <button
                         disabled={lines.length === 0}
                         onClick={() => { onSave(lines); onClose(); }}
-                        className="px-6 py-2 text-sm text-white font-semibold rounded-xl bg-yellow-500 hover:bg-yellow-600 disabled:opacity-40">
-                        Thêm {lines.length} người
+                        className="px-6 py-2 text-sm text-slate-900 font-bold rounded bg-yellow-400 hover:bg-yellow-500 disabled:opacity-40 disabled:cursor-not-allowed transition-all">
+                        ✓ Thêm {lines.length > 0 ? lines.length : '0'} thí sinh
                     </button>
                 </div>
             </div>
@@ -393,13 +448,14 @@ export default function Events() {
 
     const [activeId, setActiveId] = useState(null);
     const [showCreate, setShowCreate] = useState(false);
-    const [cardDialog, setCardDialog] = useState(null);   // contest object
-    const [addDialog, setAddDialog] = useState(null);   // contest object
-    const [editDialog, setEditDialog] = useState(null);   // contest object
-    const [confirmDel, setConfirmDel] = useState(null);   // contestId
+    const [cardDialog, setCardDialog] = useState(null);
+    const [addDialog, setAddDialog] = useState(null);
+    const [editDialog, setEditDialog] = useState(null);
+    const [confirmDel, setConfirmDel] = useState(null);
     const [search, setSearch] = useState('');
     const [filter, setFilter] = useState('all');
     const [refreshing, setRefreshing] = useState(false);
+    const [tab, setTab] = useState('contestants'); // 'contestants' | 'leaderboard'
 
     // ── Fetch contestants của 1 contest vào cache local ──────────────────────
     const loadContestants = async (contestId, force = false) => {
@@ -552,7 +608,7 @@ export default function Events() {
         <div className="flex flex-col h-full overflow-hidden">
 
             {/* HEADER */}
-            <div className="bg-white border-b border-slate-200 px-8 py-5 flex items-center justify-between shrink-0">
+            <div className="bg-white border-b border-slate-200 px-4 py-3 md:px-8 md:py-5 flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:justify-between shrink-0">
                 <div className="flex items-center gap-3">
                     <Trophy className="w-6 h-6 text-yellow-500 shrink-0" />
                     <div>
@@ -563,7 +619,7 @@ export default function Events() {
                     </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                     <button onClick={handleRefresh} title="Tải lại từ server"
                         className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-600 transition-colors">
                         <RefreshCw className={clsx('w-4 h-4', refreshing && 'animate-spin')} />
@@ -603,62 +659,72 @@ export default function Events() {
                                 <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /> Đang phát
                             </span>
                         )}
-                    </>)}
 
-                    <button onClick={() => setShowCreate(true)}
-                        className="flex items-center gap-2 px-5 py-2.5 text-white font-semibold rounded-xl bg-yellow-500 hover:bg-yellow-600 shadow-sm text-sm">
-                        <Plus className="w-4 h-4" /> Tạo cuộc thi
-                    </button>
+                        <div className="relative">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                            <input
+                                className="pl-9 pr-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-yellow-300"
+                                placeholder="Tìm thí sinh..."
+                                value={search} onChange={e => setSearch(e.target.value)} />
+                        </div>
+                    </>)}
                 </div>
             </div>
 
             {/* BODY */}
-            <div className="flex flex-1 overflow-hidden">
+            <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
 
                 {/* Sidebar */}
-                <div className="w-56 border-r border-slate-200 bg-white overflow-y-auto shrink-0">
-                    <div className="p-3">
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1 mb-2 mt-1">
-                            Danh sách ({contests.length})
-                        </p>
-                        <div className="space-y-1">
-                            {contests.map(c => (
-                                <div key={c.id} className="group relative flex items-center">
-                                    <button onClick={() => setActiveId(c.id)}
-                                        className={clsx(
-                                            'flex-1 text-left px-3 py-2.5 rounded-xl text-sm font-medium transition-colors flex items-center gap-2 pr-8',
-                                            activeId === c.id
-                                                ? 'bg-yellow-500 text-white'
-                                                : 'text-slate-600 hover:bg-yellow-50'
-                                        )}>
-                                        <Trophy className={clsx('w-3.5 h-3.5 shrink-0',
-                                            activeId === c.id ? 'text-yellow-100' : 'text-yellow-400')} />
-                                        <span className="truncate flex-1">{c.title}</span>
-                                        {loadingId === c.id
-                                            ? <Loader2 className="w-3 h-3 animate-spin opacity-60 shrink-0" />
-                                            : <span className={clsx('text-xs font-semibold shrink-0',
-                                                activeId === c.id ? 'text-yellow-100' : 'text-slate-400')}>
-                                                {(cache[c.id] ?? []).length}
-                                            </span>
-                                        }
-                                    </button>
-                                    <button onClick={() => setConfirmDel(c.id)} title="Xoá cuộc thi"
-                                        className={clsx(
-                                            'absolute right-1 p-1 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity',
-                                            activeId === c.id
-                                                ? 'hover:bg-yellow-400 text-yellow-100'
-                                                : 'hover:bg-red-50 text-slate-300 hover:text-red-500'
-                                        )}>
-                                        <Trash2 className="w-3.5 h-3.5" />
-                                    </button>
-                                </div>
-                            ))}
-                            {contests.length === 0 && (
-                                <div className="text-center py-8">
-                                    <Trophy className="w-8 h-8 mx-auto mb-2 opacity-20 text-yellow-400" />
-                                    <p className="text-xs text-slate-400">Chưa có cuộc thi</p>
-                                </div>
-                            )}
+                <div className="w-full md:w-64 border-b md:border-b-0 md:border-r border-slate-200 bg-white overflow-y-auto shrink-0 max-h-44 md:max-h-none">
+                    <div className="p-3 space-y-3">
+                        <button onClick={() => setShowCreate(true)}
+                            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-white font-semibold rounded-xl bg-yellow-500 hover:bg-yellow-600 transition-colors text-sm">
+                            <Plus className="w-4 h-4" /> Tạo cuộc thi
+                        </button>
+                        
+                        <div>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1 mb-2">
+                                Danh sách ({contests.length})
+                            </p>
+                            <div className="space-y-1">
+                                {contests.map(c => (
+                                    <div key={c.id} className="group relative flex items-center gap-0.5 pr-1">
+                                        <button onClick={() => setActiveId(c.id)}
+                                            className={clsx(
+                                                'flex-1 text-left px-3 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-2',
+                                                activeId === c.id
+                                                    ? 'bg-yellow-500 text-white'
+                                                    : 'text-slate-600 hover:bg-slate-100'
+                                            )}>
+                                            <Trophy className={clsx('w-3.5 h-3.5 shrink-0',
+                                                activeId === c.id ? 'text-yellow-100' : 'text-yellow-500')} />
+                                            <span className="truncate flex-1">{c.title}</span>
+                                            {loadingId === c.id
+                                                ? <Loader2 className="w-3 h-3 animate-spin opacity-60 shrink-0" />
+                                                : <span className={clsx('text-xs font-semibold shrink-0',
+                                                    activeId === c.id ? 'text-yellow-100' : 'text-slate-500')}>
+                                                    {(cache[c.id] ?? []).length}
+                                                </span>
+                                            }
+                                        </button>
+                                        <button onClick={() => setConfirmDel(c.id)} title="Xoá cuộc thi"
+                                            className={clsx(
+                                                'p-2 rounded-lg transition-all shrink-0 flex items-center justify-center',
+                                                activeId === c.id
+                                                    ? 'hover:bg-yellow-600 text-white'
+                                                    : 'text-red-600 hover:bg-red-100'
+                                            )}>
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                ))}
+                                {contests.length === 0 && (
+                                    <div className="text-center py-8">
+                                        <Trophy className="w-8 h-8 mx-auto mb-2 opacity-20 text-slate-300" />
+                                        <p className="text-xs text-slate-400">Chưa có cuộc thi</p>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -666,54 +732,27 @@ export default function Events() {
                 {/* Main panel */}
                 <div className="flex-1 flex flex-col overflow-hidden">
 
-                    {/* Sub-header filter */}
+                    {/* Tabs */}
                     {activeContest && (
-                        <div className="bg-white border-b border-slate-100 px-6 py-3 flex items-center gap-3 shrink-0 flex-wrap">
-                            <span className="text-sm font-bold text-slate-800 shrink-0">{activeContest.title}</span>
-                            <span className="text-slate-200 shrink-0">|</span>
-
-                            <div className="flex items-center gap-1.5 text-xs text-slate-500 shrink-0">
-                                <BookOpen className="w-3.5 h-3.5 text-blue-400" />
-                                <span className="font-semibold text-slate-700">{activeContest.title}</span>
-                                <span className="text-slate-400">
-                                    ({(activeContest.questions ?? []).length} câu)
+                        <div className="bg-white border-b border-slate-200 px-4 flex gap-0 shrink-0">
+                            <button onClick={() => setTab('contestants')}
+                                className={clsx('px-5 py-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2',
+                                    tab === 'contestants' ? 'border-yellow-500 text-yellow-700' : 'border-transparent text-slate-500 hover:text-slate-700')}>
+                                <Users className="w-4 h-4" /> Người chơi
+                                <span className={clsx('text-xs px-1.5 py-0.5 rounded-full font-bold',
+                                    tab === 'contestants' ? 'bg-yellow-100 text-yellow-700' : 'bg-slate-100 text-slate-500')}>
+                                    {allC.length}
                                 </span>
-                            </div>
-
-                            <span className="text-slate-200 shrink-0">|</span>
-
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                                {[
-                                    ['all', 'Tất cả', allC.length],
-                                    ['active', 'Đang thi', counts.active],
-                                    ['eliminated', 'Bị loại', counts.eliminated],
-                                    ['winner', 'Vô địch', counts.winner],
-                                ].map(([val, lbl, n]) => (
-                                    <button key={val} onClick={() => setFilter(val)}
-                                        className={clsx(
-                                            'flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors',
-                                            filter === val
-                                                ? 'bg-yellow-500 text-white border-yellow-500'
-                                                : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                                        )}>
-                                        {lbl}
-                                        <span className={clsx('font-bold',
-                                            filter === val ? 'text-white' : 'text-slate-400')}>{n}</span>
-                                    </button>
-                                ))}
-                            </div>
-
-                            <div className="ml-auto relative shrink-0">
-                                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
-                                <input
-                                    className="pl-8 pr-3 py-1.5 border border-slate-200 rounded-lg text-xs outline-none focus:ring-1 focus:ring-yellow-300 w-44"
-                                    placeholder="Tìm tên, số thẻ..."
-                                    value={search} onChange={e => setSearch(e.target.value)} />
-                            </div>
+                            </button>
+                            <button onClick={() => setTab('leaderboard')}
+                                className={clsx('px-5 py-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2',
+                                    tab === 'leaderboard' ? 'border-amber-500 text-amber-700' : 'border-transparent text-slate-500 hover:text-slate-700')}>
+                                <Medal className="w-4 h-4" /> Bảng xếp hạng
+                            </button>
                         </div>
                     )}
 
-                    {/* Table */}
+                    {/* Content */}
                     <div className="flex-1 overflow-y-auto">
                         {!activeContest ? (
                             <div className="flex flex-col items-center justify-center h-full text-slate-400">
@@ -726,6 +765,78 @@ export default function Events() {
                                 <Loader2 className="w-8 h-8 animate-spin text-yellow-400" />
                                 <p className="text-sm text-slate-400">Đang tải danh sách thí sinh...</p>
                             </div>
+                        ) : tab === 'leaderboard' ? (
+                            /* LEADERBOARD VIEW */
+                            (() => {
+                                const ranked = [...allC].sort((a, b) => {
+                                    const diff = (b.correct_count ?? 0) - (a.correct_count ?? 0);
+                                    if (diff !== 0) return diff;
+                                    // Tie-break: active > eliminated > winner display priority doesn't matter, sort by name
+                                    return a.name.localeCompare(b.name, 'vi');
+                                });
+                                const medalColors = ['#F59E0B', '#9CA3AF', '#CD7F32']; // gold, silver, bronze
+                                return ranked.length === 0 ? (
+                                    <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                                        <Medal className="w-12 h-12 mb-3 opacity-20" />
+                                        <p className="font-medium">Chưa có dữ liệu xếp hạng</p>
+                                    </div>
+                                ) : (
+                                    <div className="p-4 max-w-3xl mx-auto">
+                                        <table className="w-full text-sm">
+                                            <thead>
+                                                <tr className="border-b-2 border-slate-200">
+                                                    <th className="text-left py-3 px-3 text-xs font-bold text-slate-400 uppercase tracking-widest w-16">Hạng</th>
+                                                    <th className="text-left py-3 px-3 text-xs font-bold text-slate-400 uppercase tracking-widest w-16">Thẻ</th>
+                                                    <th className="text-left py-3 px-3 text-xs font-bold text-slate-400 uppercase tracking-widest">Họ và tên</th>
+                                                    <th className="text-center py-3 px-3 text-xs font-bold text-slate-400 uppercase tracking-widest w-28">Câu đúng</th>
+                                                    <th className="text-center py-3 px-3 text-xs font-bold text-slate-400 uppercase tracking-widest w-28">Trạng thái</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {ranked.map((c, i) => {
+                                                    // Calculate rank (same correct_count = same rank)
+                                                    const rank = i === 0 ? 1
+                                                        : (c.correct_count ?? 0) === (ranked[i - 1].correct_count ?? 0)
+                                                            ? ranked.findIndex(r => (r.correct_count ?? 0) === (c.correct_count ?? 0)) + 1
+                                                            : i + 1;
+                                                    const sc = STATUS_CFG[c.status] || STATUS_CFG.active;
+                                                    return (
+                                                        <tr key={c.id} className={clsx('border-b border-slate-100 transition-colors',
+                                                            rank <= 3 ? 'bg-amber-50/50' : 'hover:bg-slate-50')}>
+                                                            <td className="py-3 px-3">
+                                                                {rank <= 3 ? (
+                                                                    <div className="w-7 h-7 rounded-full flex items-center justify-center text-white font-bold text-xs"
+                                                                        style={{ backgroundColor: medalColors[rank - 1] }}>
+                                                                        {rank}
+                                                                    </div>
+                                                                ) : (
+                                                                    <span className="text-slate-400 font-semibold pl-1.5">{rank}</span>
+                                                                )}
+                                                            </td>
+                                                            <td className="py-3 px-3 font-mono text-xs text-slate-500 font-bold">
+                                                                #{String(c.card_id).padStart(2, '0')}
+                                                            </td>
+                                                            <td className="py-3 px-3 font-semibold text-slate-800">{c.name}</td>
+                                                            <td className="py-3 px-3 text-center">
+                                                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 font-bold text-xs">
+                                                                    <CheckCircle2 className="w-3.5 h-3.5" />
+                                                                    {c.correct_count ?? 0}
+                                                                </span>
+                                                            </td>
+                                                            <td className="py-3 px-3 text-center">
+                                                                <span className={clsx('text-xs font-semibold px-2.5 py-1 rounded-full border',
+                                                                    sc.bg, sc.text, sc.border)}>
+                                                                    {sc.label}
+                                                                </span>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                );
+                            })()
                         ) : displayed.length === 0 ? (
                             <div className="flex flex-col items-center justify-center h-full text-slate-400">
                                 <UserPlus className="w-12 h-12 mb-3 opacity-20" />
@@ -740,103 +851,17 @@ export default function Events() {
                                 )}
                             </div>
                         ) : (
-                            <table className="w-full border-collapse">
-                                <thead className="sticky top-0 bg-slate-50 border-b border-slate-200 z-10">
-                                    <tr>
-                                        <th className="px-5 py-3 text-xs font-semibold text-slate-500 uppercase text-left w-12">STT</th>
-                                        <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase text-left">Họ và tên</th>
-                                        <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase text-center">
-                                            <span className="flex items-center justify-center gap-1">
-                                                <Hash className="w-3 h-3" /> Thẻ
-                                            </span>
-                                        </th>
-                                        <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase text-center">Trạng thái</th>
-                                        <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase text-center">Tuỳ chỉnh</th>
-                                        <th className="w-10" />
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {displayed.map((c, i) => {
-                                        const sc = STATUS_CFG[c.status];
-                                        return (
-                                            <tr key={c.id} className={clsx(
-                                                'transition-colors hover:bg-amber-50/40',
-                                                c.status === 'eliminated' && 'opacity-55'
-                                            )}>
-                                                <td className="px-5 py-3 text-sm text-slate-400 font-mono">{i + 1}</td>
-
-                                                <td className="px-4 py-3">
-                                                    <div className="flex items-center gap-3">
-                                                        <div className={clsx(
-                                                            'w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0',
-                                                            c.status === 'winner' ? 'bg-yellow-500'
-                                                                : c.status === 'eliminated' ? 'bg-slate-300'
-                                                                    : 'bg-yellow-400'
-                                                        )}>
-                                                            {c.status === 'winner' ? '🏆' : c.name.charAt(0).toUpperCase()}
-                                                        </div>
-                                                        <span className={clsx('text-sm font-medium',
-                                                            c.status === 'eliminated'
-                                                                ? 'line-through text-slate-400'
-                                                                : 'text-slate-800')}>
-                                                            {c.name}
-                                                        </span>
-                                                    </div>
-                                                </td>
-
-                                                {/* Số thẻ do backend gán */}
-                                                <td className="px-4 py-3 text-center">
-                                                    <span className="bg-yellow-50 text-yellow-700 border border-yellow-200 text-xs font-black px-2.5 py-1 rounded-full font-mono">
-                                                        #{String(c.card_id).padStart(2, '0')}
-                                                    </span>
-                                                </td>
-
-                                                <td className="px-4 py-3 text-center">
-                                                    <span className={clsx(
-                                                        'px-2.5 py-1 rounded-full text-xs font-semibold border',
-                                                        sc?.bg, sc?.text, sc?.border
-                                                    )}>
-                                                        {sc?.label}
-                                                    </span>
-                                                </td>
-
-                                                <td className="px-4 py-3 text-center">
-                                                    <div className="flex items-center justify-center gap-1">
-                                                        {c.status !== 'winner' && (
-                                                            <button onClick={() => handleStatus(c.id, 'winner')}
-                                                                title="Đặt vô địch"
-                                                                className="p-1.5 hover:text-yellow-500 hover:bg-yellow-50 text-slate-300 rounded-lg transition-colors">
-                                                                <Crown className="w-4 h-4" />
-                                                            </button>
-                                                        )}
-                                                        {c.status === 'eliminated' && (
-                                                            <button onClick={() => handleStatus(c.id, 'active')}
-                                                                title="Khôi phục"
-                                                                className="p-1.5 hover:text-green-500 hover:bg-green-50 text-slate-300 rounded-lg transition-colors">
-                                                                <CheckCircle2 className="w-4 h-4" />
-                                                            </button>
-                                                        )}
-                                                        {c.status === 'active' && (
-                                                            <button onClick={() => handleStatus(c.id, 'eliminated')}
-                                                                title="Loại thí sinh"
-                                                                className="p-1.5 hover:text-red-500 hover:bg-red-50 text-slate-300 rounded-lg transition-colors">
-                                                                <XCircle className="w-4 h-4" />
-                                                            </button>
-                                                        )}
-                                                    </div>
-                                                </td>
-
-                                                <td className="px-2 py-3">
-                                                    <button onClick={() => handleRemove(c.id)}
-                                                        className="p-1.5 hover:bg-red-50 hover:text-red-400 rounded-lg text-slate-200 transition-colors">
-                                                        <Trash2 className="w-3.5 h-3.5" />
-                                                    </button>
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
+                            /* GRID VIEW */
+                            <div className="p-3 overflow-y-auto">
+                                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-4 md:gap-x-20 gap-y-4 text-sm">
+                                    {displayed.map((c) => (
+                                        <div key={c.id} className="border-b border-slate-300 pb-2 text-slate-700">
+                                            <span className="font-semibold">#{String(c.card_id).padStart(2, '0')}. </span>
+                                            <span>{c.name}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
                         )}
                     </div>
                 </div>

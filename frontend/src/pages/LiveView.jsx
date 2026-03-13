@@ -5,21 +5,21 @@
  * tự động trả máy chiếu về Idle khi kết thúc.
  */
 
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Bar } from 'react-chartjs-2';
 import {
     Chart as ChartJS, CategoryScale, LinearScale,
     BarElement, Tooltip, Legend
 } from 'chart.js';
 import { useApp } from '../context/AppContext';
-import { useNavigate } from 'react-router-dom';
-import { useAudio } from '../hooks/useAudio';
 import { usePresentationChannel } from '../hooks/usePresentationChannel';
+import { useSessionPhase } from '../hooks/useSessionPhase';
+import ContestantGrid from '../components/ContestantGrid';
 import {
     Square, Eye, EyeOff, RefreshCw, Camera, CameraOff,
     ChevronRight, Radio, Zap, Users, CheckCircle2,
     Timer, Play, Pause, AlertTriangle, HeartHandshake,
-    Shuffle, List, TrendingUp, X, UserCheck, Monitor, SkipForward,
+    X, UserCheck, Monitor,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -82,35 +82,17 @@ function ConfirmRevealDialog({ onConfirm, onCancel }) {
 
 // ─── Rescue Modal ─────────────────────────────────────────────────────────────
 function RescueModal({ eliminated, onRescue, onClose, loading }) {
-    const [mode, setMode]             = useState('random');
-    const [count, setCount]           = useState(1);
-    const [manualInput, setManualInput] = useState('');
-    const [preview, setPreview]       = useState(null);
-    const [step, setStep]             = useState(1);
+    const [mode, setMode] = useState('all'); // 'all' | 'count'
+    const [count, setCount] = useState(1);
 
-    const computePreview = useCallback(() => {
-        if (mode === 'manual') {
-            const tokens  = manualInput.split(/[\n,，;]+/).map(s => s.trim()).filter(Boolean);
-            const cardIds = tokens.map(t => parseInt(t, 10)).filter(n => !isNaN(n));
-            return eliminated.filter(c => cardIds.includes(c.card_id)).slice(0, 50);
-        } else if (mode === 'deepest') {
-            return [...eliminated].sort((a, b) => (b.correct_count ?? 0) - (a.correct_count ?? 0)).slice(0, count);
-        } else {
-            return [...eliminated].sort(() => Math.random() - 0.5).slice(0, count);
-        }
-    }, [mode, count, manualInput, eliminated]);
+    // Always sort by correct_count descending
+    const sorted = [...eliminated].sort((a, b) => (b.correct_count ?? 0) - (a.correct_count ?? 0));
+    const toRescue = mode === 'all' ? sorted : sorted.slice(0, count);
 
-    const handlePreview = () => { setPreview(computePreview()); setStep(2); };
     const handleConfirm = () => {
-        if (!preview?.length) return;
-        onRescue('manual', preview.length, preview.map(c => c.id));
+        if (!toRescue.length) return;
+        onRescue('manual', toRescue.length, toRescue.map(c => c.id));
     };
-
-    const modeConfigs = [
-        { key: 'random',  icon: Shuffle,    label: 'Random',       desc: 'Bốc thăm ngẫu nhiên từ danh sách bị loại', color: '#8B5CF6' },
-        { key: 'deepest', icon: TrendingUp, label: 'Lọt sâu nhất', desc: 'Người trả lời đúng nhiều câu nhất',         color: '#F59E0B' },
-        { key: 'manual',  icon: List,       label: 'Thủ công',     desc: 'Nhập số báo danh (thẻ) cụ thể',            color: '#10B981' },
-    ];
 
     return (
         <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
@@ -131,139 +113,88 @@ function RescueModal({ eliminated, onRescue, onClose, loading }) {
                     </button>
                 </div>
 
-                {step === 1 && (
-                    <div className="p-5 space-y-4">
-                        <div className="space-y-2">
-                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Chế độ cứu trợ</p>
-                            {modeConfigs.map(cfg => (
-                                <button key={cfg.key} onClick={() => setMode(cfg.key)}
-                                    className={clsx('flex items-center gap-3 w-full px-4 py-3 rounded-xl border-2 text-left transition-all',
-                                        mode === cfg.key ? 'border-current shadow-sm' : 'border-slate-200 hover:border-slate-300')}
-                                    style={mode === cfg.key ? { borderColor: cfg.color, background: cfg.color + '10' } : {}}>
-                                    <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
-                                        style={{ backgroundColor: cfg.color + '20' }}>
-                                        <cfg.icon className="w-4 h-4" style={{ color: cfg.color }} />
-                                    </div>
-                                    <div className="flex-1">
-                                        <p className="text-sm font-bold text-slate-800">{cfg.label}</p>
-                                        <p className="text-xs text-slate-500">{cfg.desc}</p>
-                                    </div>
-                                    {mode === cfg.key && (
-                                        <div className="w-4 h-4 rounded-full flex items-center justify-center shrink-0"
-                                            style={{ backgroundColor: cfg.color }}>
-                                            <div className="w-2 h-2 rounded-full bg-white" />
-                                        </div>
-                                    )}
-                                </button>
-                            ))}
-                        </div>
-
-                        {mode !== 'manual' && (
-                            <div>
-                                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Số người cứu trợ</p>
-                                <div className="flex items-center gap-3">
-                                    <button onClick={() => setCount(c => Math.max(1, c - 1))}
-                                        className="w-9 h-9 rounded-xl border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50 font-bold text-lg">−</button>
-                                    <div className="flex-1 text-center">
-                                        <span className="text-3xl font-extrabold text-slate-800">{count}</span>
-                                        <span className="text-slate-400 text-sm ml-1">/ {eliminated.length} người</span>
-                                    </div>
-                                    <button onClick={() => setCount(c => Math.min(eliminated.length, c + 1))}
-                                        className="w-9 h-9 rounded-xl border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50 font-bold text-lg">+</button>
-                                </div>
-                                <div className="flex gap-2 mt-2 justify-center">
-                                    {[1,3,5,10].filter(n => n <= eliminated.length).map(n => (
-                                        <button key={n} onClick={() => setCount(n)}
-                                            className={clsx('px-3 py-1 rounded-lg text-xs font-bold border transition-all',
-                                                count === n ? 'bg-green-600 text-white border-green-600' : 'border-slate-200 text-slate-600 hover:bg-slate-50')}>
-                                            {n}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-
-                        {mode === 'manual' && (
-                            <div>
-                                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Nhập số báo danh (thẻ)</p>
-                                <textarea
-                                    className="w-full h-28 px-3 py-2 rounded-xl border border-slate-200 text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent"
-                                    placeholder={"Mỗi số 1 dòng hoặc cách nhau bởi dấu phẩy\nVí dụ:\n5\n12\n23"}
-                                    value={manualInput} onChange={e => setManualInput(e.target.value)} />
-                                <div className="mt-1.5 flex flex-wrap gap-1 max-h-20 overflow-y-auto">
-                                    {eliminated.slice(0, 30).map(c => (
-                                        <button key={c.id}
-                                            onClick={() => {
-                                                const id = String(c.card_id);
-                                                setManualInput(prev => {
-                                                    const lines = prev.split('\n').map(s => s.trim()).filter(Boolean);
-                                                    return lines.includes(id) ? lines.filter(l => l !== id).join('\n') : [...lines, id].join('\n');
-                                                });
-                                            }}
-                                            className={clsx('text-xs px-2 py-0.5 rounded border font-mono transition-all',
-                                                manualInput.split(/[\n,]+/).map(s => s.trim()).includes(String(c.card_id))
-                                                    ? 'bg-green-600 text-white border-green-600'
-                                                    : 'border-slate-200 text-slate-600 hover:bg-slate-50')}>
-                                            #{String(c.card_id).padStart(2,'0')} {c.name.split(' ').slice(-1)[0]}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-
-                        <div className="flex gap-3 pt-1">
-                            <button onClick={onClose} className="flex-1 py-2.5 text-sm font-semibold text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50">Huỷ</button>
-                            <button onClick={handlePreview} disabled={mode === 'manual' && !manualInput.trim()}
-                                className="flex-1 py-2.5 text-sm font-bold text-white rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-all hover:opacity-90"
-                                style={{ background: 'linear-gradient(135deg, #059669, #10b981)' }}>
-                                Xem trước →
+                <div className="p-5 space-y-4">
+                    <div className="space-y-2">
+                        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Chế độ cứu trợ</p>
+                        <div className="flex gap-2">
+                            <button onClick={() => setMode('all')}
+                                className={clsx('flex-1 px-4 py-3 rounded-xl border-2 text-center transition-all',
+                                    mode === 'all' ? 'border-green-500 bg-green-50 shadow-sm' : 'border-slate-200 hover:border-slate-300')}>
+                                <p className="text-sm font-bold text-slate-800">Cứu tất cả</p>
+                                <p className="text-xs text-slate-500">{eliminated.length} người</p>
+                            </button>
+                            <button onClick={() => setMode('count')}
+                                className={clsx('flex-1 px-4 py-3 rounded-xl border-2 text-center transition-all',
+                                    mode === 'count' ? 'border-amber-500 bg-amber-50 shadow-sm' : 'border-slate-200 hover:border-slate-300')}>
+                                <p className="text-sm font-bold text-slate-800">Số lượng cụ thể</p>
+                                <p className="text-xs text-slate-500">Ưu tiên câu đúng nhiều nhất</p>
                             </button>
                         </div>
                     </div>
-                )}
 
-                {step === 2 && preview && (
-                    <div className="p-5 space-y-4">
+                    {mode === 'count' && (
                         <div>
-                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">
-                                Xác nhận cứu trợ {preview.length} thí sinh
-                            </p>
-                            <div className="bg-green-50 border border-green-200 rounded-xl p-3 max-h-48 overflow-y-auto">
-                                {preview.length === 0 ? (
-                                    <p className="text-sm text-slate-400 text-center py-3">Không tìm thấy thí sinh phù hợp</p>
-                                ) : (
-                                    <div className="grid grid-cols-2 gap-2">
-                                        {preview.map(c => (
-                                            <div key={c.id} className="flex items-center gap-2 px-2 py-1.5 bg-white rounded-lg border border-green-100">
-                                                <UserCheck className="w-3.5 h-3.5 text-green-600 shrink-0" />
-                                                <div className="min-w-0">
-                                                    <p className="text-xs font-bold text-slate-800 truncate">{c.name}</p>
-                                                    <p className="text-[10px] text-slate-400">
-                                                        Thẻ #{String(c.card_id).padStart(2,'0')}
-                                                        {c.correct_count != null && ` · ${c.correct_count} câu đúng`}
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
+                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Số người cứu trợ</p>
+                            <div className="flex items-center gap-3">
+                                <button onClick={() => setCount(c => Math.max(1, c - 1))}
+                                    className="w-9 h-9 rounded-xl border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50 font-bold text-lg">−</button>
+                                <div className="flex-1 text-center">
+                                    <span className="text-3xl font-extrabold text-slate-800">{count}</span>
+                                    <span className="text-slate-400 text-sm ml-1">/ {eliminated.length} người</span>
+                                </div>
+                                <button onClick={() => setCount(c => Math.min(eliminated.length, c + 1))}
+                                    className="w-9 h-9 rounded-xl border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50 font-bold text-lg">+</button>
+                            </div>
+                            <div className="flex gap-2 mt-2 justify-center">
+                                {[1,3,5,10].filter(n => n <= eliminated.length).map(n => (
+                                    <button key={n} onClick={() => setCount(n)}
+                                        className={clsx('px-3 py-1 rounded-lg text-xs font-bold border transition-all',
+                                            count === n ? 'bg-green-600 text-white border-green-600' : 'border-slate-200 text-slate-600 hover:bg-slate-50')}>
+                                        {n}
+                                    </button>
+                                ))}
                             </div>
                         </div>
-                        <div className="flex gap-3">
-                            <button onClick={() => { setStep(1); setPreview(null); }}
-                                className="flex-1 py-2.5 text-sm font-semibold text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50">
-                                ← Quay lại
-                            </button>
-                            <button onClick={handleConfirm} disabled={loading || preview.length === 0}
-                                className="flex-1 py-2.5 text-sm font-bold text-white rounded-xl disabled:opacity-50 hover:opacity-90 flex items-center justify-center gap-2"
-                                style={{ background: 'linear-gradient(135deg, #059669, #10b981)' }}>
-                                {loading
-                                    ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang cứu...</>
-                                    : <><HeartHandshake className="w-4 h-4" /> Xác nhận cứu trợ</>}
-                            </button>
+                    )}
+
+                    {/* Preview list */}
+                    <div>
+                        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">
+                            Sẽ cứu {toRescue.length} thí sinh
+                        </p>
+                        <div className="bg-green-50 border border-green-200 rounded-xl p-3 max-h-48 overflow-y-auto">
+                            {toRescue.length === 0 ? (
+                                <p className="text-sm text-slate-400 text-center py-3">Không có thí sinh</p>
+                            ) : (
+                                <div className="grid grid-cols-2 gap-2">
+                                    {toRescue.map(c => (
+                                        <div key={c.id} className="flex items-center gap-2 px-2 py-1.5 bg-white rounded-lg border border-green-100">
+                                            <UserCheck className="w-3.5 h-3.5 text-green-600 shrink-0" />
+                                            <div className="min-w-0">
+                                                <p className="text-xs font-bold text-slate-800 truncate">{c.name}</p>
+                                                <p className="text-[10px] text-slate-400">
+                                                    Thẻ #{String(c.card_id).padStart(2,'0')}
+                                                    {c.correct_count != null && ` · ${c.correct_count} câu đúng`}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     </div>
-                )}
+
+                    <div className="flex gap-3">
+                        <button onClick={onClose} className="flex-1 py-2.5 text-sm font-semibold text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50">Huỷ</button>
+                        <button onClick={handleConfirm} disabled={loading || toRescue.length === 0}
+                            className="flex-1 py-2.5 text-sm font-bold text-white rounded-xl disabled:opacity-50 hover:opacity-90 flex items-center justify-center gap-2"
+                            style={{ background: 'linear-gradient(135deg, #059669, #10b981)' }}>
+                            {loading
+                                ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang cứu...</>
+                                : <><HeartHandshake className="w-4 h-4" /> Xác nhận cứu trợ</>}
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     );
@@ -296,7 +227,7 @@ function TimerRing({ seconds, total, size = 140 }) {
 
 // ─── No session screen ────────────────────────────────────────────────────────
 // Truyền thêm openPresentation và presenterConnected
-function NoSession({ events, onStart, openPresentation, presenterConnected }) {
+function NoSession({ events, onStart, openPresentation, presenterConnected, loading }) {
     return (
         <div className="flex flex-col h-full items-center justify-center bg-slate-50 p-8">
             <div className="w-full max-w-xl">
@@ -369,6 +300,81 @@ function NoSession({ events, onStart, openPresentation, presenterConnected }) {
     );
 }
 
+// ─── Backup Question Picker Modal ─────────────────────────────────────────────
+function BackupQuestionPicker({ backupQuestions, usedBackupIds, onSelect, onClose, loading }) {
+    const available = backupQuestions.filter(q => !usedBackupIds.includes(q.id));
+    const used = backupQuestions.filter(q => usedBackupIds.includes(q.id));
+
+    return (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+                <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100"
+                    style={{ background: 'linear-gradient(135deg, #fef3c7, #fde68a)' }}>
+                    <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-amber-600 flex items-center justify-center">
+                            <RefreshCw className="w-5 h-5 text-white" />
+                        </div>
+                        <div>
+                            <h2 className="text-base font-bold text-amber-900">Chọn câu dự phòng</h2>
+                            <p className="text-xs text-amber-700">{available.length} câu có sẵn · {used.length} đã dùng</p>
+                        </div>
+                    </div>
+                    <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-amber-100 text-amber-600">
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+
+                <div className="p-5 max-h-[50vh] overflow-y-auto space-y-2">
+                    {backupQuestions.length === 0 ? (
+                        <div className="text-center py-8 px-6 bg-slate-50 rounded-xl">
+                            <p className="text-slate-500 font-semibold">Chưa có câu dự phòng</p>
+                            <p className="text-slate-400 text-sm mt-1">Đánh dấu câu dự phòng trong Ngân hàng câu hỏi.</p>
+                        </div>
+                    ) : available.length === 0 ? (
+                        <div className="text-center py-8 px-6 bg-amber-50 rounded-xl">
+                            <p className="text-amber-700 font-semibold">Đã dùng hết câu dự phòng!</p>
+                        </div>
+                    ) : (
+                        available.map(q => (
+                            <button
+                                key={q.id}
+                                onClick={() => onSelect(q.id)}
+                                disabled={loading}
+                                className="w-full text-left px-4 py-3 rounded-xl border-2 border-slate-200 hover:border-amber-400 hover:bg-amber-50 transition-all disabled:opacity-50"
+                            >
+                                <p className="text-sm font-bold text-slate-800 line-clamp-2">{q.text}</p>
+                                <div className="flex gap-2 mt-1.5 text-xs text-slate-500">
+                                    <span>A: {q.option_a}</span>
+                                    <span>·</span>
+                                    <span>Đáp án: <strong className="text-green-600">{q.correct_answer}</strong></span>
+                                </div>
+                            </button>
+                        ))
+                    )}
+                    {used.length > 0 && (
+                        <>
+                            <div className="text-xs font-bold text-slate-400 uppercase tracking-widest pt-2">Đã sử dụng</div>
+                            {used.map(q => (
+                                <div key={q.id} className="px-4 py-3 rounded-xl bg-slate-100 border border-slate-200 opacity-50">
+                                    <p className="text-sm text-slate-500 line-clamp-1">{q.text}</p>
+                                    <p className="text-xs text-slate-400 mt-0.5">Đã dùng</p>
+                                </div>
+                            ))}
+                        </>
+                    )}
+                </div>
+
+                <div className="px-6 pb-5 pt-2">
+                    <button onClick={onClose}
+                        className="w-full py-2.5 text-sm font-semibold text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50">
+                        Huỷ
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN LIVEVIEW
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -376,319 +382,85 @@ export default function LiveView() {
     const {
         questionSets, events, session, contestants,
         startSession, endSession, nextQuestion, revealAnswer, clearResponses, simulateAnswer,
-        cameraConnected, fetchActiveSession, fetchContestants,
-        rescueContestants,
+        cameraConnected, fetchActiveSession, fetchContestants, fetchBanks, fetchContests,
+        rescueContestants, useBackupQuestion, loading,
     } = useApp();
-    const navigate = useNavigate();
-
-    // ── State ──────────────────────────────────────────────────────────────────
-    const [phase,          setPhase]          = useState('lobby');
-    const [timerSel,       setTimerSel]       = useState(15);
-    const [timeLeft,       setTimeLeft]       = useState(15);
-    const [timerRunning,   setTimerRunning]   = useState(false);
-    const [showConfirmEnd, setShowConfirmEnd] = useState(false);
-    const [showRescue,     setShowRescue]     = useState(false);
-    const [rescueLoading,  setRescueLoading]  = useState(false);
-    const [questionHistory,setQuestionHistory]= useState({});
-    // FIX #5: State cho reveal confirmation
-    const [showRevealConfirm, setShowRevealConfirm] = useState(false);
-
-    const intervalRef        = useRef(null);
-    const prevQIdx            = useRef(null);
-    const sessionStartedRef   = useRef(false); // true after operator clicks "Vào thi"
-    const { play: playAudio, stop: stopAudio, beep } = useAudio();
-
     // ── BroadcastChannel ───────────────────────────────────────────────────────
     const { broadcast, openPresentation, connected: presenterConnected } = usePresentationChannel('sender');
 
     // ── Derived values ─────────────────────────────────────────────────────────
     const activeEvent    = events.find(e => e.id === session?.eventId);
     const activeSet      = questionSets.find(s => s.id === activeEvent?.setId);
-    const currentQ       = activeSet?.questions[session?.questionIndex ?? 0];
+    // BUG C FIX: fallback sang session.current_question khi banks chưa load xong
+    const currentQ       = activeSet?.questions[session?.questionIndex ?? 0]
+                        ?? session?.current_question
+                        ?? null;
     const activeConts    = activeEvent?.contestants.filter(c => c.status === 'active')    ?? [];
     const eliminatedConts= activeEvent?.contestants.filter(c => c.status === 'eliminated') ?? [];
     const respondedCount = Object.keys(session?.responses || {}).length;
-    const totalVotes     = ANSWER_KEYS.reduce((s, k) => s + (session?.votes?.[k] || 0), 0);
-    const isRevealed     = phase === 'revealed';
-
-    // ── broadcastState: gửi toàn bộ state sang màn hình chiếu ─────────────────
-    const broadcastState = useCallback((overrides = {}) => {
-        broadcast({
-            phase:           overrides.phase          ?? phase,
-            question:        overrides.question       ?? currentQ,
-            votes:           overrides.votes          ?? (session?.votes ?? {}),
-            timeLeft:        overrides.timeLeft       ?? timeLeft,
-            timerTotal:      overrides.timerTotal     ?? timerSel,
-            scannedCount:    overrides.scannedCount   ?? respondedCount,
-            activeTotal:     overrides.activeTotal    ?? activeConts.length,
-            eventName:       activeEvent?.name        ?? '',
-            questionIndex:   overrides.questionIndex  ?? (session?.questionIndex ?? 0),
-            totalQuestions:  activeSet?.questions.length ?? session?.total_questions ?? 0,
-            questions:       activeSet?.questions     ?? [],
-            questionHistory: overrides.questionHistory ?? questionHistory,
-            contestants:     activeConts,
-            responses:       session?.responses       ?? {},
-        });
-    }, [broadcast, phase, currentQ, session, timeLeft, timerSel, respondedCount, activeConts.length, activeEvent, activeSet, questionHistory]);
-
-    // ── Tự động trả về Idle khi rời trang LiveView ────────────────────────────
-    useEffect(() => {
-        return () => {
-            broadcast({ phase: 'idle' });
-        };
-    }, [broadcast]);
 
     // ── Fetch on mount ─────────────────────────────────────────────────────────
     useEffect(() => {
-        fetchActiveSession?.();
-        fetchContestants?.();
+        const init = async () => {
+            await fetchBanks?.();
+            await fetchContests?.();
+            const s = await fetchActiveSession?.();
+            if (s?.contest_id) await fetchContestants?.(s.contest_id);
+        };
+        init();
     }, []);
 
-    // ── Fix Lỗi Sync: Ép máy chiếu cập nhật ngay khi câu hỏi thay đổi ─────────
-    const currentQIdRef = useRef(null);
-    useEffect(() => {
-        if (currentQ && currentQ.id !== currentQIdRef.current) {
-            currentQIdRef.current = currentQ.id;
-            if (!sessionStartedRef.current) {
-                    // First load — send lobby state
-                    broadcast({
-                        phase: 'lobby',
-                        eventName:      activeEvent?.name ?? '',
-                        activeTotal:    activeConts.length,
-                        contestants:    activeConts,
-                        totalQuestions: activeSet?.questions.length ?? 0,
-                        questions:      activeSet?.questions ?? [],
-                    });
-                } else {
-                    // Question advanced — send new question data immediately
-                    broadcast({
-                        phase: 'question',
-                        question:       currentQ,
-                        votes:          {},
-                        timeLeft:       timerSel,
-                        timerTotal:     timerSel,
-                        scannedCount:   0,
-                        activeTotal:    activeConts.length,
-                        eventName:      activeEvent?.name ?? '',
-                        questionIndex:  session?.questionIndex ?? 0,
-                        totalQuestions: activeSet?.questions.length ?? 0,
-                        questions:      activeSet?.questions ?? [],
-                        contestants:    activeConts,
-                        responses:      {}
-                    });
-                }
-        }
-    }, [currentQ, session?.questionIndex]); // eslint-disable-line
-
-    // ── Khi receiver reconnect → gửi đúng phase, không replay state cũ ─────────
-    // FIX #4: Force sync toàn bộ state khi presenter reconnect
-    const prevConnectedRef = useRef(false);
-    useEffect(() => {
-        if (presenterConnected && !prevConnectedRef.current) {
-            if (!sessionStartedRef.current) {
-                // Chưa bấm "Vào thi" → luôn gửi lobby, dù phase local là gì
-                broadcast({
-                    phase:          'lobby',
-                    eventName:      activeEvent?.name ?? '',
-                    activeTotal:    activeConts.length,
-                    contestants:    activeConts,
-                    totalQuestions: activeSet?.questions.length ?? 0,
-                    questions:      activeSet?.questions ?? [],
-                });
-            } else {
-                // FIX #4: Gửi toàn bộ state hiện tại thay vì gọi broadcastState()
-                broadcast({
-                    phase:           phase,
-                    question:        currentQ,
-                    votes:           session?.votes ?? {},
-                    timeLeft:        timeLeft,
-                    timerTotal:      timerSel,
-                    scannedCount:    respondedCount,
-                    activeTotal:     activeConts.length,
-                    eventName:       activeEvent?.name ?? '',
-                    questionIndex:   session?.questionIndex ?? 0,
-                    totalQuestions:  activeSet?.questions.length ?? 0,
-                    questions:       activeSet?.questions ?? [],
-                    questionHistory: questionHistory,
-                    contestants:     activeConts,
-                    responses:       session?.responses ?? {},
-                });
-            }
-        }
-        prevConnectedRef.current = presenterConnected;
-    }, [presenterConnected, phase, currentQ, session, timeLeft, timerSel, respondedCount, activeConts, activeEvent, activeSet, questionHistory]); // eslint-disable-line
-
-    // ── Reset khi câu mới ──────────────────────────────────────────────────────
-    // FIX #3: Thêm timerSel dependency để reset đúng thời gian khi BTC đổi timer
-    useEffect(() => {
-        const idx = session?.questionIndex;
-        if (idx === undefined) return;
-        if (prevQIdx.current === null) {
-            // First load — record index but stay in lobby
-            prevQIdx.current = idx;
-        } else if (idx !== prevQIdx.current) {
-            // Question advanced during an active session
-            prevQIdx.current = idx;
-            setPhase('question');
-            setTimerRunning(false);
-            setTimeLeft(timerSel);
-            clearInterval(intervalRef.current);
-            
-            // FIX #3: Force broadcast ngay để presentation screen sync
-            broadcastState({
-                phase: 'question',
-                timeLeft: timerSel,
-                timerTotal: timerSel
-            });
-        }
-    }, [session?.questionIndex, timerSel]); // eslint-disable-line
-
-    // ── Timer tick ─────────────────────────────────────────────────────────────
-    useEffect(() => {
-        clearInterval(intervalRef.current);
-        if (!timerRunning) return;
-        intervalRef.current = setInterval(() => {
-            setTimeLeft(t => {
-                if (t <= 1) {
-                    clearInterval(intervalRef.current);
-                    setTimerRunning(false);
-                    setPhase('scanning');
-                    stopAudio();
-                    beep(600, 400);
-                    return 0;
-                }
-                if (t <= 4) beep(880, 120);
-                return t - 1;
-            });
-        }, 1000);
-        return () => clearInterval(intervalRef.current);
-    }, [timerRunning]);
-
-    // ── Sync timeLeft realtime khi countdown ───────────────────────────────────
-    useEffect(() => {
-        if (phase === 'countdown') {
-            broadcastState({ phase: 'countdown', timeLeft });
-        }
-    }, [timeLeft]); // eslint-disable-line
-
-    // ── Sync votes realtime khi scanning/revealed ──────────────────────────────
-    useEffect(() => {
-        if (phase === 'scanning' || phase === 'revealed') {
-            broadcastState({});
-        }
-    }, [session?.votes, respondedCount]); // eslint-disable-line
-
-    // ── Handlers ───────────────────────────────────────────────────────────────
-    // ── Lobby: bắt đầu thi từ câu 1 ─────────────────────────────────────────────────────────
-    const handleStartFromLobby = () => {
-        sessionStartedRef.current = true;
-        setPhase('question');
-        broadcastState({ phase: 'question' });
-    };
-
-    const startTimer = () => {
-        setTimeLeft(timerSel);
-        setTimerRunning(true);
-        setPhase('countdown');
-        broadcastState({ phase: 'countdown', timeLeft: timerSel });
-        playAudio(`/sounds/${timerSel}s.mp3`, { volume: 0.7 }).catch(() => {});
-    };
-
-    const togglePause = () => {
-        setTimerRunning(r => {
-            if (r) stopAudio();
-            return !r;
-        });
-    };
-
-    // FIX #10: Force stop tất cả audio khi skip
-    const skipToScan = () => {
-        clearInterval(intervalRef.current);
-        setTimerRunning(false);
-        setTimeLeft(0);
-        setPhase('scanning');
-        broadcastState({ phase: 'scanning', timeLeft: 0 });
-        
-        // FIX #10: Force stop audio
-        stopAudio();
-        // Also pause any playing audio elements
-        const audioElements = document.querySelectorAll('audio');
-        audioElements.forEach(audio => {
-            audio.pause();
-            audio.currentTime = 0;
-        });
-    };
-
-    const handleReveal = async () => {
-        await revealAnswer();
-        setPhase('revealed');
-        broadcastState({ phase: 'revealed' });
-    };
-    
-    const confirmReveal = () => {
-        setShowRevealConfirm(false);
-        handleReveal();
-    };
-
-    const handleNext = async () => {
-        const curIdx = session?.questionIndex ?? 0;
-        const newHistory = {
-            ...questionHistory,
-            [curIdx]: { votes: session?.votes ?? {}, correct_answer: currentQ?.correct_answer },
-        };
-        setQuestionHistory(newHistory);
-
-        // Chuyển phase TRƯỚC khi gọi clearResponses() để tránh sync-votes effect
-        // broadcast lại trạng thái 'revealed' cũ lên câu mới.
-        setPhase('question');
-        setTimeLeft(timerSel);
-
-        // Gửi trạng thái sạch ngay lập tức cho máy chiếu (votes/responses trắng)
-        // currentQIdRef effect sẽ cập nhật câu hỏi mới ngay sau khi nextQuestion() resolve.
-        broadcast({
-            phase:          'question',
-            question:       currentQ,  // placeholder — overwritten by currentQIdRef effect
-            votes:          {},
-            timeLeft:       timerSel,
-            timerTotal:     timerSel,
-            scannedCount:   0,
-            activeTotal:    activeConts.length,
-            eventName:      activeEvent?.name ?? '',
-            questionIndex:  curIdx + 1,
-            totalQuestions: activeSet?.questions.length ?? 0,
-            questions:      activeSet?.questions ?? [],
-            questionHistory: { ...questionHistory, [curIdx]: { votes: session?.votes ?? {}, correct_answer: currentQ?.correct_answer } },
-            contestants:    activeConts,
-            responses:      {},
-        });
-
-        await nextQuestion();
-        clearResponses();
-    };
-
-    const handleEnd = async () => {
-        sessionStartedRef.current = false; // reset để lần mở máy chiếu tiếp theo không replay
-        broadcast({ phase: 'idle' });      // ép máy chiếu về idle, đồng thời clear lastPayloadRef
-        await endSession();
-        navigate('/dashboard');
-    };
-
-    const handleRescue = async (mode, count, ids) => {
-        setRescueLoading(true);
-        try {
-            await rescueContestants(mode, count, ids);
-            setShowRescue(false);
-        } finally {
-            setRescueLoading(false);
-        }
-    };
+    // ── Phase state machine ────────────────────────────────────────────────────
+    const {
+        phase, setPhase,
+        timerSel, setTimerSel,
+        timeLeft, setTimeLeft,
+        timerRunning,
+        showConfirmEnd, setShowConfirmEnd,
+        showRescue, setShowRescue,
+        showRevealConfirm, setShowRevealConfirm,
+        showBackupPicker, setShowBackupPicker,
+        rescueLoading,
+        totalVotes,
+        isRevealed,
+        broadcastState,
+        handleStartFromLobby,
+        startTimer,
+        togglePause,
+        skipToScan,
+        handleReveal,
+        confirmReveal,
+        handleNext,
+        handleEnd,
+        handleRescue,
+        handleUseBackup,
+        retryQuestion,
+    } = useSessionPhase({
+        session,
+        activeEvent,
+        activeSet,
+        currentQ,
+        activeConts,
+        eliminatedConts,
+        respondedCount,
+        events,
+        revealAnswer,
+        nextQuestion,
+        endSession,
+        clearResponses,
+        rescueContestants,
+        useBackupQuestion,
+        broadcast,
+        presenterConnected,
+    });
 
     if (!session) return (
-        <NoSession 
-            events={events} 
-            onStart={startSession} 
+        <NoSession
+            events={events}
+            onStart={startSession}
             openPresentation={openPresentation}
             presenterConnected={presenterConnected}
+            loading={loading}
         />
     );
 
@@ -735,10 +507,10 @@ export default function LiveView() {
         <div className="flex flex-col h-full bg-slate-50">
 
             {/* ── TOP BAR ──────────────────────────────────────────────────── */}
-            <header className="bg-white border-b border-slate-200 px-6 flex items-center gap-4 shrink-0 shadow-sm" style={{ minHeight: 68 }}>
+            <header className="bg-white border-b border-slate-200 px-3 md:px-6 flex items-center gap-2 md:gap-4 shrink-0 shadow-sm" style={{ minHeight: 56 }}>
 
                 {/* Room ID */}
-                <div className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200 shrink-0">
+                <div className="hidden md:flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200 shrink-0">
                     <span className="text-xs font-semibold text-indigo-400 uppercase tracking-widest">ID PHÒNG:</span>
                     <span className="text-sm font-bold text-indigo-700 font-mono tracking-wider">{session.id}</span>
                 </div>
@@ -747,7 +519,7 @@ export default function LiveView() {
                 <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 text-sm font-bold shrink-0">
                     <span style={{ color: '#10509F' }}>{(session.questionIndex ?? 0) + 1}</span>
                     <span className="text-slate-400">/</span>
-                    <span className="text-slate-600">{activeSet?.questions.length ?? session.total_questions ?? '?'}</span>
+                    <span className="text-slate-600">{activeSet?.questions.length || session.total_questions || '?'}</span>
                 </div>
 
                 {/* Câu hỏi */}
@@ -769,7 +541,7 @@ export default function LiveView() {
                 </div>
 
                 {/* Camera status */}
-                <div className={clsx('flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold shrink-0',
+                <div className={clsx('hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold shrink-0',
                     cameraConnected ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-slate-100 text-slate-400')}>
                     {cameraConnected
                         ? <><Camera className="w-3.5 h-3.5" />Online</>
@@ -781,7 +553,7 @@ export default function LiveView() {
                     onClick={openPresentation}
                     title="Mở cửa sổ màn hình chiếu → kéo sang tivi/projector → F11 fullscreen"
                     className={clsx(
-                        'flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all shrink-0',
+                        'hidden md:flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all shrink-0',
                         presenterConnected
                             ? 'bg-green-50 text-green-700 border-green-300 hover:bg-green-100'
                             : 'text-slate-500 hover:bg-slate-100 border-slate-200'
@@ -793,7 +565,7 @@ export default function LiveView() {
                 </button>
 
                 <button onClick={simulateAnswer}
-                    className="px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-100 rounded-lg border border-slate-200 shrink-0">
+                    className="hidden md:block px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-100 rounded-lg border border-slate-200 shrink-0">
                     + Giả lập
                 </button>
 
@@ -804,7 +576,7 @@ export default function LiveView() {
             </header>
 
             {/* ── ANSWER OPTIONS BAR ───────────────────────────────────────── */}
-            <div className="bg-white border-b border-slate-100 px-6 py-3 flex items-center gap-2 shrink-0 flex-wrap">
+            <div className="bg-white border-b border-slate-100 px-3 md:px-6 py-2 flex items-center gap-2 shrink-0 overflow-x-auto">
                 {ANSWER_KEYS.map(k => {
                     const fk  = `option_${k.toLowerCase()}`;
                     const isC = k === currentQ?.correct_answer;
@@ -812,7 +584,7 @@ export default function LiveView() {
                     const pct = totalVotes > 0 ? Math.round((v / totalVotes) * 100) : 0;
                     return (
                         <div key={k} className={clsx(
-                            'flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-semibold border transition-all',
+                            'flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-semibold border transition-all shrink-0',
                             isRevealed && isC  ? 'bg-green-50 border-green-300 text-green-800 ring-2 ring-green-200'
                                 : isRevealed   ? 'opacity-40 border-slate-200 text-slate-400'
                                                : 'border-slate-200 text-slate-700'
@@ -902,7 +674,7 @@ export default function LiveView() {
                                     <Users className="w-5 h-5 text-slate-500 shrink-0" />
                                     <div>
                                         <p className="font-bold text-slate-700 text-sm">
-                                            {activeConts.length} thí sinh · {activeSet?.questions.length ?? '?'} câu hỏi
+                                            {activeConts.length} thí sinh · {activeSet?.questions.length || session?.total_questions || '?'} câu hỏi
                                         </p>
                                         <p className="text-xs text-slate-400">{eliminatedConts.length} đã bị loại</p>
                                     </div>
@@ -996,23 +768,30 @@ export default function LiveView() {
                                     <p className="text-xs text-purple-500">/ {activeConts.length} đã quét</p>
                                 </div>
                             </div>
-                            <div className="grid grid-cols-10 gap-2 flex-1 content-start">
-                                {activeEvent?.contestants.map(c => {
-                                    const s        = getTileStyle(c);
+                            <ContestantGrid
+                                contestants={activeEvent?.contestants || []}
+                                columns={8}
+                                renderCard={(c) => {
+                                    const s = getTileStyle(c);
                                     const votedRaw = session?.responses?.[c.card_id];
-                                    const voted    = typeof votedRaw === 'object' ? votedRaw?.answer : votedRaw;
+                                    const voted = typeof votedRaw === 'object' ? votedRaw?.answer : votedRaw;
                                     return (
-                                        <div key={c.id}
-                                            className="aspect-[3/4] rounded-xl flex flex-col items-center justify-center gap-0.5 p-1 transition-all duration-300 hover:scale-105 shadow-sm"
-                                            style={{ backgroundColor: s.bg, color: s.color, outline: `2px solid ${s.ring}`, outlineOffset: 1 }}
-                                            title={`${c.name} (#${c.card_id})${voted ? ` → ${voted}` : ' — chưa quét'}`}>
-                                            <span className="text-[11px] font-extrabold leading-none">#{String(c.card_id).padStart(2,'0')}</span>
-                                            <span className="text-[7px] font-medium leading-none opacity-80 truncate w-full text-center px-0.5">{c.name.split(' ').slice(-1)[0]}</span>
-                                            {voted && <span className="text-[9px] font-black leading-none">{voted}</span>}
+                                        <div
+                                            className="rounded-lg p-2 flex flex-col items-center justify-center aspect-[6/1] transition-all duration-300 hover:scale-110 shadow-sm border-2"
+                                            style={{
+                                                backgroundColor: s.bg,
+                                                color: s.color,
+                                                borderColor: s.ring,
+                                            }}
+                                            title={`${c.name} (#${c.card_id})${voted ? ` → ${voted}` : ' — chưa quét'}`}
+                                        >
+                                            <span className="text-sm font-extrabold leading-tight">#{String(c.card_id).padStart(2, '0')}</span>
+                                            <span className="text-xs font-medium leading-tight mt-0.5 truncate w-full text-center px-0.5">{c.name}</span>
+                                            {voted && <span className="text-sm font-black leading-tight mt-0.5">{voted}</span>}
                                         </div>
                                     );
-                                })}
-                            </div>
+                                }}
+                            />
                         </div>
                     )}
 
@@ -1040,65 +819,98 @@ export default function LiveView() {
                                     </button>
                                 )}
                             </div>
-                            <div className="grid grid-cols-10 gap-2 content-start flex-1">
-                                {activeEvent?.contestants.map(c => {
+                            <ContestantGrid
+                                contestants={activeEvent?.contestants || []}
+                                columns={8}
+                                renderCard={(c) => {
                                     const s = getTileStyle(c);
                                     return (
-                                        <div key={c.id}
-                                            className="aspect-[3/4] rounded-xl flex flex-col items-center justify-center gap-0.5 p-1 shadow-sm"
-                                            style={{ backgroundColor: s.bg, color: s.color, outline: `2px solid ${s.ring}`, outlineOffset: 1 }}
-                                            title={(() => { const r = session?.responses?.[c.card_id]; const a = typeof r === 'object' ? r?.answer : r; return `${c.name}: ${a || 'không trả lời'}`; })()}>
-                                            <span className="text-[11px] font-extrabold leading-none">#{String(c.card_id).padStart(2,'00')}</span>
-                                            <span className="text-[7px] font-medium leading-none opacity-80 truncate w-full text-center px-0.5">{c.name.split(' ').slice(-1)[0]}</span>
+                                        <div
+                                            className="rounded-lg p-2 flex flex-col items-center justify-center aspect-[6/1] shadow-sm border-2"
+                                            style={{
+                                                backgroundColor: s.bg,
+                                                color: s.color,
+                                                borderColor: s.ring,
+                                            }}
+                                            title={(() => {
+                                                const r = session?.responses?.[c.card_id];
+                                                const a = typeof r === 'object' ? r?.answer : r;
+                                                return `${c.name}: ${a || 'không trả lời'}`;
+                                            })()}
+                                        >
+                                            <span className="text-sm font-extrabold leading-tight">#{String(c.card_id).padStart(2, '00')}</span>
+                                            <span className="text-xs font-medium leading-tight mt-0.5 truncate w-full text-center px-0.5">{c.name}</span>
                                         </div>
                                     );
-                                })}
-                            </div>
+                                }}
+                            />
                         </div>
                     )}
                 </div>
 
-                {/* ── RIGHT: Chart (scanning / revealed) ── */}
+                {/* ── RIGHT: Vote Stats (scanning / revealed) ── */}
                 {(phase === 'scanning' || phase === 'revealed') && (
-                    <div className="flex-[1] bg-white flex flex-col overflow-hidden border-l border-slate-200">
-                        <div className="flex-1 flex flex-col items-center justify-center p-4 relative">
-                            {isRevealed && currentQ && (
-                                <div className="absolute top-3 right-3 flex items-center gap-1.5 px-2.5 py-1 bg-green-100 text-green-800 rounded-lg font-bold text-xs border border-green-200">
-                                    <CheckCircle2 className="w-3 h-3" /> Đúng: <span className="text-sm font-black">{currentQ.correct_answer}</span>
-                                </div>
-                            )}
-                            <div className="absolute top-3 left-3 text-xs font-semibold bg-slate-50 border border-slate-200 px-2 py-1 rounded-lg text-slate-500">
-                                <span className="text-green-600 font-extrabold">{activeConts.length}</span> đang thi
-                                {eliminatedConts.length > 0 && <span className="ml-1.5 text-red-400">· {eliminatedConts.length} loại</span>}
+                    <div className="hidden md:flex flex-[0.35] flex-col overflow-hidden border-l border-slate-200 p-4 bg-white">
+                        {isRevealed && currentQ && (
+                            <div className="flex items-center gap-1.5 px-3 py-2 bg-green-100 text-green-800 rounded-lg font-bold text-xs border border-green-200 mb-4 shrink-0">
+                                <CheckCircle2 className="w-4 h-4" /> Đúng: <span className="text-sm font-black">{currentQ.correct_answer}</span>
                             </div>
-                            <div className="w-full" style={{ height: 220, marginTop: 44 }}>
-                                <Bar data={chartData} options={chartOptions} />
-                            </div>
-                            <div className="flex justify-around w-full mt-3 px-2">
-                                {ANSWER_KEYS.map(k => {
-                                    const v   = session?.votes?.[k] || 0;
-                                    const pct = totalVotes > 0 ? Math.round((v / totalVotes) * 100) : 0;
-                                    const isC = k === currentQ?.correct_answer;
-                                    return (
-                                        <div key={k} className="text-center">
-                                            <div className={clsx('text-xl font-extrabold transition-all',
-                                                isRevealed && isC  ? 'text-green-600' :
-                                                isRevealed && !isC ? 'text-slate-300' : 'text-slate-800')}>
+                        )}
+                        <div className="text-xs font-semibold bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg text-slate-500 mb-4 shrink-0">
+                            <span className="text-green-600 font-extrabold">{activeConts.length}</span> đang thi
+                            {eliminatedConts.length > 0 && <span className="ml-1.5 text-red-500 font-bold">· {eliminatedConts.length} loại</span>}
+                        </div>
+
+                        {/* Vote results table */}
+                        <div className="flex-1 flex flex-col gap-3 justify-start">
+                            {ANSWER_KEYS.map(k => {
+                                const v   = session?.votes?.[k] || 0;
+                                const pct = totalVotes > 0 ? Math.round((v / totalVotes) * 100) : 0;
+                                const isC = k === currentQ?.correct_answer;
+                                return (
+                                    <div key={k} className={clsx(
+                                        'p-3 rounded-lg border-2 transition-all',
+                                        isRevealed && isC
+                                            ? 'bg-green-50 border-green-300'
+                                            : isRevealed && !isC
+                                            ? 'bg-slate-100 border-slate-300'
+                                            : 'bg-slate-50 border-slate-200'
+                                    )}>
+                                        <div className="flex items-center justify-between mb-1">
+                                            <span className="font-bold text-sm" style={{ color: ANSWER_COLORS[k] }}>{k}</span>
+                                            <span className={clsx(
+                                                'font-extrabold text-lg',
+                                                isRevealed && isC ? 'text-green-600' :
+                                                isRevealed && !isC ? 'text-slate-400' : 'text-slate-800'
+                                            )}>
                                                 {v}
-                                            </div>
-                                            <div className="text-xs font-bold" style={{ color: ANSWER_COLORS[k] }}>{k}</div>
-                                            {isRevealed && <div className="text-[10px] text-slate-400">{pct}%</div>}
+                                            </span>
                                         </div>
-                                    );
-                                })}
-                            </div>
+                                        {totalVotes > 0 && (
+                                            <div className="w-full bg-slate-200 rounded-full h-1.5">
+                                                <div
+                                                    className={clsx('h-full rounded-full transition-all',
+                                                        isRevealed && isC ? 'bg-green-500' : 'bg-blue-500'
+                                                    )}
+                                                    style={{ width: `${pct}%` }}
+                                                />
+                                            </div>
+                                        )}
+                                        {isRevealed && (
+                                            <div className="text-center text-xs font-semibold mt-1.5 text-slate-500">
+                                                {pct}%
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
                         </div>
                     </div>
                 )}
             </div>
 
             {/* ── BOTTOM CONTROLS ─────────────────────────────────────────── */}
-            <div className="h-16 bg-white border-t border-slate-200 flex items-center justify-center gap-3 px-8 shrink-0 shadow-[0_-2px_12px_rgba(0,0,0,0.06)]">
+            <div className="min-h-12 bg-white border-t border-slate-200 flex items-center justify-center flex-wrap gap-2 md:gap-3 px-3 md:px-8 py-2 shrink-0 shadow-[0_-2px_12px_rgba(0,0,0,0.06)]">
                 {phase === 'question' && (
                     <p className="text-sm text-slate-400 italic">Chọn thời gian rồi bấm <strong>Bắt đầu</strong></p>
                 )}
@@ -1137,10 +949,12 @@ export default function LiveView() {
                             className="flex items-center gap-2 px-5 py-2 text-sm font-bold rounded-full border-2 border-amber-400 text-amber-700 hover:bg-amber-50 transition-all">
                             <RefreshCw className="w-4 h-4" /> Thi lại câu
                         </button>
-                        <button onClick={skipQuestion}
-                            className="flex items-center gap-2 px-5 py-2 text-sm font-bold rounded-full border-2 border-slate-400 text-slate-700 hover:bg-slate-50 transition-all">
-                            <SkipForward className="w-4 h-4" /> Bỏ qua câu
-                        </button>
+                        {(activeSet?.backupQuestions?.length > 0) && (
+                            <button onClick={() => setShowBackupPicker(true)}
+                                className="flex items-center gap-2 px-5 py-2 text-sm font-bold rounded-full border-2 border-red-400 text-red-700 hover:bg-red-50 transition-all">
+                                <X className="w-4 h-4" /> Loại bỏ câu
+                            </button>
+                        )}
                         {eliminatedConts.length > 0 && (
                             <button onClick={() => setShowRescue(true)}
                                 className="flex items-center gap-2 px-5 py-2 text-sm font-bold rounded-full border-2 border-green-400 text-green-700 hover:bg-green-50 transition-all">
@@ -1148,7 +962,7 @@ export default function LiveView() {
                             </button>
                         )}
                         <button onClick={handleNext}
-                            disabled={!activeSet || (session.questionIndex ?? 0) >= (activeSet.questions.length - 1)}
+                            disabled={(session.questionIndex ?? 0) >= ((activeSet?.questions?.length || session.total_questions || 1) - 1)}
                             className="flex items-center gap-2 px-7 py-2.5 text-white font-bold rounded-full shadow-md hover:-translate-y-0.5 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                             style={{ background: 'linear-gradient(135deg,#10509F,#1a6fd4)' }}>
                             Câu tiếp <ChevronRight className="w-4 h-4" />
@@ -1171,6 +985,15 @@ export default function LiveView() {
                     onRescue={handleRescue}
                     onClose={() => setShowRescue(false)}
                     loading={rescueLoading}
+                />
+            )}
+            {showBackupPicker && (
+                <BackupQuestionPicker
+                    backupQuestions={activeSet?.backupQuestions || []}
+                    usedBackupIds={session?.used_backup_ids || []}
+                    onSelect={handleUseBackup}
+                    onClose={() => setShowBackupPicker(false)}
+                    loading={loading}
                 />
             )}
         </div>

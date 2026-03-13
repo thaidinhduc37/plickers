@@ -8,10 +8,13 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { api, wsManager } from '../api/client';
 
+console.log('[AppContext] Module loaded');
+
 const AppContext = createContext(null);
 export const useApp = () => useContext(AppContext);
 
 export function AppProvider({ children }) {
+  console.log('[AppProvider] Rendering');
 
     const [banks, setBanks] = useState([]);
     const [contests, setContests] = useState([]);
@@ -22,6 +25,8 @@ export function AppProvider({ children }) {
 
     // responsesMap: { [card_id]: { answer, timestamp, contestant_name } }
     const responsesMapRef = useRef({});
+    // Bug D fix: ref to always-current activeSession for WS reconnect closure
+    const activeSessionRef = useRef(null);
     const [responsesMap, setResponsesMap] = useState({});
 
     const [wsConnected, setWsConnected] = useState(false);
@@ -52,9 +57,9 @@ export function AppProvider({ children }) {
 
     const fetchBanks = useCallback(async () => {
         try {
-            const summaries = await api.getBanks();
-            const full = await Promise.all(summaries.map(old => api.getBank(old.id).catch(() => old)));
-            setBanks(full);
+            // getBanks() trả QuestionBankOut đầy đủ kèm questions — không cần N+1 getBank(id)
+            const banks = await api.getBanks();
+            setBanks(banks);
         } catch (e) { handleApiError(e, 'Không thể tải thư viện câu hỏi'); }
     }, [handleApiError]);
 
@@ -131,9 +136,9 @@ export function AppProvider({ children }) {
 
     const fetchContests = useCallback(async () => {
         try {
-            const summaries = await api.getContests();
-            const full = await Promise.all(summaries.map(c => api.getContest(c.id).catch(() => c)));
-            setContests(full);
+            // getContests() trả ContestOut đủ dùng — không cần N+1 getContest(id)
+            const contests = await api.getContests();
+            setContests(contests);
         } catch (e) { handleApiError(e, 'Không thể tải danh sách cuộc thi'); }
     }, []);
 
@@ -226,14 +231,8 @@ export function AppProvider({ children }) {
 
     // ─── FIX #4: Cứu trợ ─────────────────────────────────────────────────────
     /**
-     * rescueContestants(mode, count, contestantIds?)
-     *
-     * mode:
-     *   'random'   — random `count` người từ danh sách bị loại
-     *   'manual'   — cứu đúng những id trong `contestantIds`
-     *   'deepest'  — lọt sâu nhất = sort theo correct_count (backend cần trả về field này)
-     *
-     * Trả về mảng contestant đã được cứu thành công.
+     * rescueContestants(mode, count, contestantIds)
+     * Always receives pre-sorted IDs from RescueModal (sorted by correct_count desc).
      */
     const rescueContestants = useCallback(async (mode, count, contestantIds = []) => {
         const eliminated = contestants.filter(c => c.status === 'eliminated');
@@ -242,19 +241,7 @@ export function AppProvider({ children }) {
             return [];
         }
 
-        let toRescue = [];
-
-        if (mode === 'manual') {
-            toRescue = eliminated.filter(c => contestantIds.includes(c.id)).slice(0, count);
-        } else if (mode === 'deepest') {
-            // Sắp xếp theo số câu đúng nhiều nhất (backend cần trả correct_count)
-            const sorted = [...eliminated].sort((a, b) => (b.correct_count ?? 0) - (a.correct_count ?? 0));
-            toRescue = sorted.slice(0, count);
-        } else {
-            // random
-            const shuffled = [...eliminated].sort(() => Math.random() - 0.5);
-            toRescue = shuffled.slice(0, count);
-        }
+        const toRescue = eliminated.filter(c => contestantIds.includes(c.id)).slice(0, count);
 
         if (toRescue.length === 0) {
             showToast('error', 'Không tìm được thí sinh phù hợp');
@@ -271,24 +258,7 @@ export function AppProvider({ children }) {
             succeededIds.has(c.id) ? { ...c, status: 'active' } : c
         ));
 
-        // FIX #6: Broadcast qua WebSocket để các client khác nhận update
-        if (succeeded.length > 0 && activeSession?.session_id) {
-            try {
-                // Broadcast btc_override event cho từng contestant được cứu
-                for (const c of succeeded) {
-                    wsManager.broadcast(activeSession.session_id, 'btc_override', {
-                        contestant_id: c.id,
-                        new_status: 'active',
-                        name: c.name,
-                        card_id: c.card_id
-                    });
-                }
-            } catch (e) {
-                console.error('[Rescue] Broadcast failed:', e);
-            }
-        }
-
-        if (succeeded.length > 0) showToast('success', `✅ Đã cứu trợ ${succeeded.length} thí sinh`);
+        if (succeeded.length > 0) showToast('success', `Đã cứu trợ ${succeeded.length} thí sinh`);
         if (succeeded.length < toRescue.length) showToast('error', `${toRescue.length - succeeded.length} người không cứu được`);
 
         return succeeded;
@@ -324,10 +294,15 @@ export function AppProvider({ children }) {
                         responsesMapRef.current = results.responses;
                         setResponsesMap(results.responses);
                     }
-                } catch (_) { }
+                } catch (_) {
+                    // Ignore errors during response parsing
+                }
             }
             return session;
-        } catch (e) { setActiveSession(null); return null; }
+        } catch {
+          setActiveSession(null);
+          return null;
+        }
     }, []);
 
     const startSession = async (contestId) => {
@@ -447,6 +422,32 @@ export function AppProvider({ children }) {
         catch (e) { handleApiError(e, 'Không thể bỏ qua câu hỏi'); }
     };
 
+    const useBackupQuestion = async (questionId) => {
+        setJustEliminated([]);
+        setVotes({ A: 0, B: 0, C: 0, D: 0, total: 0 });
+        responsesMapRef.current = {};
+        setResponsesMap({});
+        try {
+            const result = await api.useBackupQuestion(questionId);
+            if (result) {
+                setActiveSession(s => s ? {
+                    ...s,
+                    state: 'scanning',
+                    current_question_index: result.current_question_index,
+                    total_questions: result.total_questions,
+                    current_question: result.current_question,
+                    active_contestants: result.active_contestants,
+                    scanned_count: 0,
+                    used_backup_ids: result.used_backup_ids,
+                    question_overrides: result.question_overrides,
+                } : s);
+                showToast('success', 'Đã thay câu hỏi bằng câu dự phòng');
+            }
+            return result;
+        }
+        catch (e) { handleApiError(e, 'Không thể dùng câu dự phòng'); return null; }
+    };
+
     const endSession = async () => {
         try {
             const result = await api.endSession();
@@ -467,7 +468,8 @@ export function AppProvider({ children }) {
         responsesMapRef.current = {};
         setResponsesMap({});
     }, []);
-
+    // Bug D fix: keep activeSessionRef in sync so connectWebSocket closure always reads latest session
+    useEffect(() => { activeSessionRef.current = activeSession; }, [activeSession]);
     // ═════════════════════════════════════════════════════════════════════════
     // FIX #1: WEBSOCKET — real-time hoàn chỉnh, không cần polling
     // ═════════════════════════════════════════════════════════════════════════
@@ -481,21 +483,11 @@ export function AppProvider({ children }) {
             setCameraConnected(true);
         });
 
-        // FIX #9: Thêm toast notification và auto-reconnect khi WS disconnect
-        let reconnectTimeout = null;
-        const attemptReconnect = () => {
-            if (activeSession?.session_id) {
-                showToast('warning', 'Mất kết nối WebSocket. Đang thử lại...');
-                reconnectTimeout = setTimeout(() => {
-                    connectWebSocket(activeSession.session_id);
-                }, 3000);
-            }
-        };
-        
+        // wsManager đã có sẵn _scheduleReconnect với exponential backoff — không cần
+        // attemptReconnect thứ hai ở đây vì sẽ gây 2 reconnect xung đột (open/close liên tục).
         wsManager.on('__disconnected', () => {
             setWsConnected(false);
             setCameraConnected(false);
-            attemptReconnect();
         });
 
         // FIX #1: Mỗi lần camera quét được thẻ → scan.py broadcast "answer_received"
@@ -612,11 +604,8 @@ export function AppProvider({ children }) {
 
     useEffect(() => {
         const initApp = async () => {
-            try {
-                const loginResult = await api.login('btc', 'rcv2024');
-                if (!loginResult.ok) { showToast('error', 'Lỗi đăng nhập: ' + loginResult.error); return; }
-            } catch (e) { handleApiError(e, 'Lỗi kết nối đến server'); return; }
-
+            // Skip if not authenticated to avoid 401 redirect loops
+            if (!api.isAuthenticated()) return;
             try {
                 await fetchContests();
                 await fetchBanks();
@@ -639,15 +628,19 @@ export function AppProvider({ children }) {
     const questionSets = contests.map(c => {
         const bank = banks.find(b => b.id === c.bank_id);
         const qs = bank?.questions || c.questions || [];
+        const sortedQs = [...qs].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0));
+        const mapQ = q => ({
+            id: q.id, text: q.text,
+            option_a: q.option_a, option_b: q.option_b,
+            option_c: q.option_c, option_d: q.option_d,
+            correct_answer: q.correct_answer, time_limit_sec: q.time_limit_sec,
+            is_backup: q.is_backup || false,
+        });
         return {
             id: c.bank_id,
             name: c.title,
-            questions: [...qs].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0)).map(q => ({
-                id: q.id, text: q.text,
-                option_a: q.option_a, option_b: q.option_b,
-                option_c: q.option_c, option_d: q.option_d,
-                correct_answer: q.correct_answer, time_limit_sec: q.time_limit_sec,
-            })),
+            questions: sortedQs.filter(q => !q.is_backup).map(mapQ),
+            backupQuestions: sortedQs.filter(q => q.is_backup).map(mapQ),
         };
     });
 
@@ -655,7 +648,7 @@ export function AppProvider({ children }) {
         const bank = banks.find(b => b.id === c.bank_id);
         return {
             id: c.id, name: c.title, setId: c.bank_id,
-            question_count: (bank?.questions?.length) ?? c.question_count ?? 0,
+            question_count: (bank?.questions?.filter(q => !q.is_backup)?.length) ?? c.question_count ?? 0,
             contestants: contestants
                 .filter(cn => cn.contest_id === c.id)
                 .map(cn => ({
@@ -676,6 +669,8 @@ export function AppProvider({ children }) {
         state: activeSession.state,
         votes,
         responses: responsesMap,
+        used_backup_ids: activeSession.used_backup_ids || [],
+        question_overrides: activeSession.question_overrides || {},
     } : null;
 
     const classes = contests.map(c => ({
@@ -723,7 +718,7 @@ export function AppProvider({ children }) {
             finally { setLoading(false); }
         },
 
-        fetchContests, createContest: addContest, updateContest, deleteContest,
+        fetchContests, fetchBanks, createContest: addContest, updateContest, deleteContest,
         addQuestionToContest, bulkAddQuestionsToContest,
         addSet, updateQuestionInContest, deleteQuestionFromContest,
         reorderQuestionsInContest, deleteSet: deleteContest,
@@ -737,7 +732,7 @@ export function AppProvider({ children }) {
         addClass, deleteClass, addStudentsToClass, removeStudentFromClass, setActiveClassId,
 
         fetchActiveSession, startSession, submitScan, resetContestants,
-        revealAnswer, nextQuestion, retryQuestion, skipQuestion, endSession, clearResponses,
+        revealAnswer, nextQuestion, retryQuestion, skipQuestion, useBackupQuestion, endSession, clearResponses,
         connectWebSocket,
         downloadContestCards, downloadBlankCards,
         simulateAnswer,

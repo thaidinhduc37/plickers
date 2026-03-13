@@ -6,12 +6,17 @@ from typing import List, Optional
 import csv
 import io
 
+# FIX B4: Import card validation functions
+from app.services.card_service import validate_card, get_valid_card_ids
+
 
 def import_contestants_csv(db: Session, content: str, contest_id: int) -> List[Contestant]:
     """
     Import từ file CSV hoặc text thuần.
     Định dạng CSV: name,card_id  (có header hoặc không)
     Định dạng text: mỗi dòng là tên, card_id tự động tăng
+    
+    FIX B4: Validate PCARD encoding for all card_ids
     """
     lines = [l.strip() for l in content.strip().splitlines() if l.strip()]
     if not lines:
@@ -40,6 +45,19 @@ def import_contestants_csv(db: Session, content: str, contest_id: int) -> List[C
             name = line
             card_id = next_id
             next_id += 1
+
+        # BUG8 FIX: Validate PCARD encoding - auto-assign valid card_id if invalid
+        if not validate_card(card_id):
+            # Auto-assign next valid card_id
+            valid_ids = get_valid_card_ids()
+            # Find next available valid card_id >= next_id
+            card_id = next((v for v in valid_ids if v >= next_id), None)
+            if card_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Hết card_id hợp lệ cho cuộc thi này. Card_id được cung cấp không hợp lệ theo chuẩn PCARD."
+                )
+            next_id = card_id + 1  # BUG8 FIX: cập nhật để dòng tiếp theo không bị assign trùng card_id
 
         # Chỉ check trùng card_id trong CÙNG contest — giữ thẻ unique per-contest
         existing = db.query(Contestant).filter(
@@ -107,7 +125,8 @@ def reset_contestants_for_session(db: Session, contest_id: int):
     """Reset tất cả về active trước khi bắt đầu phiên mới."""
     db.query(Contestant).filter(Contestant.contest_id == contest_id).update({
         "status": ContestantStatus.active,
-        "eliminated_at_question": None
+        "eliminated_at_question": None,
+        "correct_count": 0,
     })
     db.commit()
 

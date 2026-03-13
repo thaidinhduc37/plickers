@@ -27,8 +27,9 @@ class QuestionBankCreate(BaseModel):
 class QuestionBankOut(BaseModel):
     id: int
     title: str
-    description: Optional[str]
-    created_at: Optional[datetime]
+    description: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: Optional[datetime] = None
     questions: List["QuestionOut"] = []
 
     class Config:
@@ -37,8 +38,9 @@ class QuestionBankOut(BaseModel):
 class QuestionBankSummary(BaseModel):
     id: int
     title: str
-    description: Optional[str]
-    created_at: Optional[datetime]
+    description: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: Optional[datetime] = None
     question_count: int = 0
 
     class Config:
@@ -56,9 +58,10 @@ class ContestCreate(BaseModel):
 class ContestOut(BaseModel):
     id: int
     title: str
-    description: Optional[str]
-    bank_id: Optional[int]
-    created_at: Optional[datetime]
+    description: Optional[str] = None
+    bank_id: Optional[int] = None
+    created_by: Optional[str] = None
+    created_at: Optional[datetime] = None
     bank: Optional["QuestionBankOut"] = None
 
     class Config:
@@ -67,8 +70,9 @@ class ContestOut(BaseModel):
 class ContestSummary(BaseModel):
     id: int
     title: str
-    description: Optional[str]
-    created_at: Optional[datetime]
+    description: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: Optional[datetime] = None
     question_count: int = 0
     max_contestants: Optional[int] = None
 
@@ -115,6 +119,7 @@ class ContestantOut(BaseModel):
     contest_id: Optional[int]
     status: str
     eliminated_at_question: Optional[int] = None
+    correct_count: int = 0
     created_at: Optional[datetime]
 
     class Config:

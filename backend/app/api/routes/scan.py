@@ -2,13 +2,13 @@ from fastapi import APIRouter, Depends, Request, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.deps import get_current_user_or_auto
 from app.schemas.schemas import ScanSubmit
 from app.services import session_service
 from app.ws.manager import ws_manager
 
 router = APIRouter(prefix="/api/scan", tags=["Scan"])
-auth = Depends(get_current_user)
+auth = Depends(get_current_user_or_auto)
 
 
 @router.post("/submit")
@@ -70,6 +70,6 @@ async def submit_scan(data: ScanSubmit, db: Session = Depends(get_db), _=auth):
 
 
 @router.get("/status/{session_id}")
-def scan_status(session_id: int, db: Session = Depends(get_db), _=auth):
+def scan_status(session_id: str, db: Session = Depends(get_db), _=auth):  # str vì Session.id = String(6)
     """Tiến độ quét: X/Y người đã có đáp án."""
     return session_service.get_current_results(db, session_id)

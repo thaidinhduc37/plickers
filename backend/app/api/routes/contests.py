@@ -3,17 +3,17 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.deps import get_current_user_or_auto
 from app.schemas.schemas import ContestCreate, ContestOut, ContestSummary, QuestionCreate, QuestionOut
 from app.services import contest_service
 
 router = APIRouter(prefix="/api/contests", tags=["Contests"])
-auth = Depends(get_current_user)
+auth = Depends(get_current_user_or_auto)
 
 
 @router.post("", response_model=ContestOut)
-def create_contest(data: ContestCreate, db: Session = Depends(get_db), _=auth):
-    return contest_service.create_contest(db, data)
+def create_contest(data: ContestCreate, db: Session = Depends(get_db), user=auth):
+    return contest_service.create_contest(db, data, created_by=user.username)
 
 
 @router.get("", response_model=List[ContestSummary])
@@ -27,6 +27,7 @@ def list_contests(db: Session = Depends(get_db), _=auth):
             id=c.id,
             title=c.title,
             description=c.description,
+            created_by=c.created_by,
             created_at=c.created_at,
             question_count=question_count,
             max_contestants=c.max_contestants,

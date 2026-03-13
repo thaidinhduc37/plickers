@@ -1,123 +1,428 @@
-import React, { useState } from 'react';
-import { Lock, User, ShieldCheck, ChevronRight } from 'lucide-react';
-import clsx from 'clsx';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { Lock, User, Eye, EyeOff } from 'lucide-react';
+import { useAuthContext } from '../context/AuthContext';
 
-export default function Login({ onLogin }) {
+export default function Login() {
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
-    const [error, setError] = useState('');
-    const [isLoading, setIsLoading] = useState(false);
+    const [showPass, setShowPass] = useState(false);
+    const [error,    setError]    = useState('');
+    const [loading,  setLoading]  = useState(false);
 
-    const handleSubmit = (e) => {
-        e.preventDefault();
-        setError('');
-        setIsLoading(true);
+    const navigate = useNavigate();
+    const location = useLocation();
+    const { isAuthenticated, loading: authLoading, login } = useAuthContext();
 
-        // Simulate network delay for animation
-        setTimeout(() => {
-            if (username === 'Admin' && password === 'Admin123') {
-                onLogin();
-            } else {
-                setError('Thông tin đăng nhập không chính xác');
-                setIsLoading(false);
-            }
-        }, 800);
+    useEffect(() => {
+        if (!authLoading && isAuthenticated)
+            navigate(location.state?.from?.pathname || '/events', { replace: true });
+    }, [isAuthenticated, authLoading]);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault(); setError(''); setLoading(true);
+        try { await login(username, password); }
+        catch (err) { setError(err.message || 'Thông tin đăng nhập không chính xác'); setLoading(false); }
     };
 
     return (
-        <div className="min-h-screen flex items-center justify-center bg-slate-900 relative overflow-hidden font-sans">
-            {/* Dynamic Background Elements */}
-            <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-blue-600/20 blur-[120px] mix-blend-screen animate-pulse pointer-events-none"></div>
-            <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-indigo-600/20 blur-[120px] mix-blend-screen animate-pulse pointer-events-none" style={{ animationDelay: '2s' }}></div>
+        <>
+        <style>{`
+            @import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800;900&display=swap');
+            *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; }
+            @keyframes spin { to { transform: rotate(360deg); } }
 
-            <div className="w-full max-w-md p-8 relative z-10">
-                <div className="backdrop-blur-xl bg-slate-800/50 border border-slate-700/50 rounded-3xl shadow-2xl p-8 transition-all hover:border-blue-500/30">
+            body { margin: 0; }
 
-                    {/* Logo / Header */}
-                    <div className="flex flex-col items-center mb-10">
-                        <div className="relative group mb-4">
-                            <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-full blur opacity-40 group-hover:opacity-75 transition duration-500"></div>
-                            <div className="relative bg-slate-900 ring-1 ring-slate-800 p-4 rounded-full">
-                                <ShieldCheck className="w-10 h-10 text-blue-400" />
-                            </div>
-                        </div>
-                        <h1 className="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-400 tracking-tight">
-                            ShieldPoll
-                        </h1>
-                        <p className="text-slate-400 mt-2 font-medium">Secure Command Center</p>
+            .rcv-page {
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                position: relative;
+                overflow: hidden;
+                font-family: 'Be Vietnam Pro', sans-serif;
+                background: linear-gradient(140deg, #004d44 0%, #006b5a 30%, #008c72 60%, #005f52 100%);
+            }
+
+            /* Hoa văn trống đồng — absolute center, rất to */
+            .rcv-drum {
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                width: min(180vw, 180vh);
+                height: min(180vw, 180vh);
+                object-fit: contain;
+                opacity: 0.12;
+                pointer-events: none;
+                z-index: 0;
+            }
+
+            /* Dot pattern */
+            .rcv-dots {
+                position: absolute; inset: 0; z-index: 0; pointer-events: none;
+                background-image: radial-gradient(circle, rgba(255,255,255,0.07) 1px, transparent 1px);
+                background-size: 28px 28px;
+            }
+
+            /* Glow top-left */
+            .rcv-glow {
+                position: absolute; top: -20%; left: 20%;
+                width: 50vw; height: 50vw;
+                border-radius: 50%;
+                background: radial-gradient(circle, rgba(0,200,140,0.2) 0%, transparent 60%);
+                pointer-events: none; z-index: 0;
+            }
+
+            /* Content wrapper */
+            .rcv-content {
+                position: relative; z-index: 1;
+                width: 100%; max-width: 1100px;
+                margin: 0 auto;
+                padding: 48px 40px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 60px;
+            }
+
+            /* LEFT */
+            .rcv-left {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                text-align: center;
+                gap: 0;
+            }
+
+            .rcv-seal {
+                width: 120px;
+                height: 120px;
+                object-fit: contain;
+                margin-bottom: 28px;
+                filter: drop-shadow(0 4px 24px rgba(0,0,0,0.4));
+            }
+
+            .rcv-title-main {
+                font-size: clamp(28px, 3vw, 44px);
+                font-weight: 900;
+                letter-spacing: 0.02em;
+                text-transform: uppercase;
+                color: #ffd700;
+                text-shadow: 0 2px 16px rgba(255,210,0,0.5), 0 4px 32px rgba(0,0,0,0.5);
+                line-height: 1.2;
+                margin-bottom: 10px;
+                white-space: nowrap;
+            }
+
+            .rcv-title-sub {
+                font-size: clamp(13px, 1.3vw, 16px);
+                font-weight: 700;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+                color: #ffd700;
+                opacity: 0.75;
+                margin-bottom: 24px;
+            }
+
+            .rcv-divider {
+                width: 60%;
+                height: 1px;
+                background: rgba(255,255,255,0.2);
+                margin-bottom: 20px;
+            }
+
+            .rcv-tagline {
+                font-size: 15px;
+                font-weight: 600;
+                color: rgba(255,255,255,0.8);
+                margin-bottom: 12px;
+            }
+
+            .rcv-desc {
+                font-size: 13px;
+                color: rgba(255,255,255,0.55);
+                line-height: 1.7;
+                max-width: 340px;
+                text-align: center;
+                margin-bottom: 28px;
+            }
+
+            .rcv-dots-row {
+                display: flex; gap: 8px; align-items: center;
+            }
+            .rcv-dot-item {
+                width: 8px; height: 8px; border-radius: 50%;
+            }
+
+            /* RIGHT — form */
+            .rcv-form-wrap {
+                width: 400px;
+                flex-shrink: 0;
+            }
+
+            .rcv-card {
+                background: rgba(255,255,255,0.1);
+                backdrop-filter: blur(20px);
+                -webkit-backdrop-filter: blur(20px);
+                border: 1px solid rgba(255,255,255,0.18);
+                border-radius: 20px;
+                padding: 40px 36px;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+            }
+
+            .rcv-card-title {
+                font-size: 26px; font-weight: 800; color: #fff;
+                text-align: center; margin-bottom: 6px;
+            }
+            .rcv-card-sub {
+                font-size: 13px; color: rgba(255,255,255,0.5);
+                text-align: center; margin-bottom: 28px;
+            }
+
+            .rcv-error {
+                margin-bottom: 16px;
+                padding: 10px 14px;
+                border-radius: 10px;
+                font-size: 13px; font-weight: 500;
+                color: #fca5a5;
+                background: rgba(220,38,38,0.2);
+                border: 1px solid rgba(220,38,38,0.35);
+            }
+
+            .rcv-field { margin-bottom: 18px; }
+            .rcv-label {
+                display: block;
+                font-size: 12px; font-weight: 600;
+                color: rgba(255,255,255,0.7);
+                margin-bottom: 8px;
+                letter-spacing: 0.03em;
+            }
+            .rcv-input-wrap { position: relative; }
+            .rcv-icon {
+                position: absolute; left: 13px; top: 50%;
+                transform: translateY(-50%);
+                width: 16px; height: 16px;
+                color: rgba(255,255,255,0.4);
+                pointer-events: none;
+            }
+            .rcv-input {
+                width: 100%;
+                background: rgba(255,255,255,0.12);
+                border: 1px solid rgba(255,255,255,0.22);
+                border-radius: 10px;
+                padding: 12px 16px 12px 42px;
+                color: #fff;
+                font-size: 14px;
+                font-family: inherit;
+                transition: all 0.18s;
+            }
+            .rcv-input:focus {
+                outline: none;
+                border-color: rgba(255,255,255,0.55);
+                background: rgba(255,255,255,0.18);
+                box-shadow: 0 0 0 3px rgba(255,255,255,0.08);
+            }
+            .rcv-input::placeholder { color: rgba(255,255,255,0.35); }
+            .rcv-input-pr { padding-right: 44px; }
+
+            .rcv-eye-btn {
+                position: absolute; right: 13px; top: 50%;
+                transform: translateY(-50%);
+                background: none; border: none; cursor: pointer; padding: 0;
+                color: rgba(255,255,255,0.4); display: flex;
+                transition: color 0.15s;
+            }
+            .rcv-eye-btn:hover { color: rgba(255,255,255,0.75); }
+
+            .rcv-submit {
+                width: 100%;
+                margin-top: 8px;
+                padding: 13px;
+                border-radius: 10px;
+                border: none;
+                background: linear-gradient(135deg, #00c9a7 0%, #00a88c 100%);
+                color: #fff;
+                font-size: 15px; font-weight: 700;
+                font-family: inherit;
+                cursor: pointer;
+                display: flex; align-items: center; justify-content: center; gap: 8px;
+                box-shadow: 0 6px 20px rgba(0,180,140,0.45);
+                transition: all 0.18s;
+            }
+            .rcv-submit:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
+            .rcv-submit:active:not(:disabled) { transform: translateY(0); }
+            .rcv-submit:disabled { opacity: 0.6; cursor: not-allowed; }
+
+            .rcv-spinner {
+                width: 20px; height: 20px;
+                border: 2.5px solid rgba(255,255,255,0.3);
+                border-top-color: #fff; border-radius: 50%;
+                animation: spin 0.75s linear infinite;
+            }
+
+            .rcv-dev {
+                margin-top: 16px; padding: 10px 14px; border-radius: 10px;
+                font-size: 12px; text-align: center; font-weight: 500;
+                color: #ffd700;
+                background: rgba(255,210,0,0.12);
+                border: 1px solid rgba(255,210,0,0.3);
+            }
+
+            .rcv-copyright {
+                text-align: center; margin-top: 16px;
+                font-size: 12px; color: rgba(255,255,255,0.3);
+            }
+
+            @media (max-width: 768px) {
+                .rcv-content {
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 32px 20px;
+                    gap: 28px;
+                    min-height: 100vh;
+                }
+
+                .rcv-left {
+                    gap: 0;
+                }
+
+                .rcv-seal {
+                    width: 72px;
+                    height: 72px;
+                    margin-bottom: 14px;
+                }
+
+                .rcv-title-main {
+                    font-size: clamp(20px, 6vw, 28px);
+                    white-space: normal;
+                    text-align: center;
+                }
+
+                .rcv-title-sub {
+                    font-size: 12px;
+                    margin-bottom: 14px;
+                }
+
+                .rcv-divider {
+                    margin-bottom: 12px;
+                }
+
+                .rcv-tagline {
+                    font-size: 13px;
+                    margin-bottom: 8px;
+                }
+
+                .rcv-desc {
+                    font-size: 12px;
+                    margin-bottom: 16px;
+                    max-width: 300px;
+                }
+
+                .rcv-form-wrap {
+                    width: 100%;
+                    max-width: 420px;
+                }
+
+                .rcv-card {
+                    padding: 28px 22px;
+                }
+            }
+
+            @media (max-width: 400px) {
+                .rcv-card {
+                    padding: 24px 16px;
+                    border-radius: 16px;
+                }
+
+                .rcv-card-title {
+                    font-size: 22px;
+                }
+            }
+        `}</style>
+
+        <div className="rcv-page">
+            {/* Hoa văn trống đồng chính giữa */}
+            <img src="/images/trong-dong.png" alt="" className="rcv-drum" />
+
+            {/* Texture */}
+            <div className="rcv-dots" />
+            <div className="rcv-glow" />
+
+            <div className="rcv-content">
+
+                {/* ── LEFT: Logo + tiêu đề vàng ── */}
+                <div className="rcv-left">
+                    <img src="/images/cong-an-hieu.png" alt="Huy hiệu Công An" className="rcv-seal" />
+
+                    <div className="rcv-title-main">RUNG CHUÔNG VÀNG</div>
+                    <div className="rcv-title-sub">Hệ thống thi trắc nghiệm</div>
+
+                    <div className="rcv-divider" />
+
+                    <div className="rcv-tagline">Công An Tỉnh Đắk Lắk</div>
+                    <p className="rcv-desc">
+                        Nền tảng thi trắc nghiệm tương tác thời gian thực, hỗ trợ đến 100 thí sinh với công nghệ quét thẻ quang học PCARD.
+                    </p>
+
+                    <div className="rcv-dots-row">
+                        {[true, true, false, false, false].map((active, i) => (
+                            <span key={i} className="rcv-dot-item"
+                                style={{ background: active ? '#ffd700' : 'rgba(255,255,255,0.25)' }} />
+                        ))}
                     </div>
-
-                    {/* Error Message */}
-                    <div className={clsx(
-                        "overflow-hidden transition-all duration-300 ease-in-out",
-                        error ? "max-h-20 mb-6 opacity-100" : "max-h-0 opacity-0"
-                    )}>
-                        <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm text-center">
-                            {error}
-                        </div>
-                    </div>
-
-                    {/* Form */}
-                    <form onSubmit={handleSubmit} className="space-y-6">
-                        <div className="space-y-1">
-                            <label className="text-sm font-medium text-slate-300 ml-1">Tài khoản Admin</label>
-                            <div className="relative group">
-                                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                                    <User className="h-5 w-5 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
-                                </div>
-                                <input
-                                    type="text"
-                                    value={username}
-                                    onChange={(e) => setUsername(e.target.value)}
-                                    className="block w-full pl-11 pr-4 py-3.5 bg-slate-900/50 border border-slate-700 rounded-xl text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all outline-none"
-                                    placeholder="Nhập tên tài khoản"
-                                    required
-                                />
-                            </div>
-                        </div>
-
-                        <div className="space-y-1">
-                            <div className="flex items-center justify-between ml-1">
-                                <label className="text-sm font-medium text-slate-300">Mật khẩu</label>
-                            </div>
-                            <div className="relative group">
-                                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                                    <Lock className="h-5 w-5 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
-                                </div>
-                                <input
-                                    type="password"
-                                    value={password}
-                                    onChange={(e) => setPassword(e.target.value)}
-                                    className="block w-full pl-11 pr-4 py-3.5 bg-slate-900/50 border border-slate-700 rounded-xl text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all outline-none"
-                                    placeholder="••••••••"
-                                    required
-                                />
-                            </div>
-                        </div>
-
-                        <button
-                            type="submit"
-                            disabled={isLoading}
-                            className="w-full relative group overflow-hidden bg-blue-600 text-white font-medium py-3.5 px-4 rounded-xl transition-all duration-300 hover:bg-blue-500 hover:shadow-[0_0_20px_rgba(37,99,235,0.4)] hover:-translate-y-0.5 disabled:opacity-70 disabled:hover:translate-y-0 disabled:hover:shadow-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900"
-                        >
-                            <span className={clsx("flex items-center justify-center gap-2 transition-all duration-300", isLoading ? "opacity-0" : "opacity-100")}>
-                                Đăng nhập hệ thống <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-                            </span>
-
-                            {isLoading && (
-                                <div className="absolute inset-0 flex items-center justify-center">
-                                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                                </div>
-                            )}
-                        </button>
-                    </form>
                 </div>
 
-                {/* Footer */}
-                <p className="text-center text-slate-500 text-xs mt-8">
-                    &copy; 2026 ShieldPoll Inc. All rights reserved. <br /> Local Network Edition.
-                </p>
+                {/* ── RIGHT: Form glass ── */}
+                <div className="rcv-form-wrap">
+                    <div className="rcv-card">
+                        <div className="rcv-card-title">Đăng nhập</div>
+                        <div className="rcv-card-sub">Hệ thống Rung Chuông Vàng</div>
+
+                        {error && <div className="rcv-error">{error}</div>}
+
+                        <form onSubmit={handleSubmit}>
+                            <div className="rcv-field">
+                                <label className="rcv-label">Tên đăng nhập</label>
+                                <div className="rcv-input-wrap">
+                                    <User className="rcv-icon" />
+                                    <input className="rcv-input" type="text"
+                                        value={username} onChange={e => setUsername(e.target.value)}
+                                        placeholder="Nhập tên đăng nhập" required />
+                                </div>
+                            </div>
+
+                            <div className="rcv-field">
+                                <label className="rcv-label">Mật khẩu</label>
+                                <div className="rcv-input-wrap">
+                                    <Lock className="rcv-icon" />
+                                    <input className="rcv-input rcv-input-pr"
+                                        type={showPass ? 'text' : 'password'}
+                                        value={password} onChange={e => setPassword(e.target.value)}
+                                        placeholder="Nhập mật khẩu" required />
+                                    <button type="button" className="rcv-eye-btn" onClick={() => setShowPass(!showPass)}>
+                                        {showPass ? <Eye size={16} /> : <EyeOff size={16} />}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <button type="submit" disabled={loading} className="rcv-submit">
+                                {loading ? <span className="rcv-spinner" /> : 'Đăng nhập'}
+                            </button>
+                        </form>
+
+                        {import.meta.env.VITE_AUTO_LOGIN === 'true' && (
+                            <div className="rcv-dev"><strong>Dev Mode:</strong> Auto-login is enabled.</div>
+                        )}
+                    </div>
+
+                    <p className="rcv-copyright">© Phòng Tham mưu — Công an tỉnh Đắk Lắk</p>
+                </div>
             </div>
         </div>
+        </>
     );
 }

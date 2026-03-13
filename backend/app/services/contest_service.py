@@ -5,8 +5,8 @@ from app.schemas.schemas import ContestCreate, QuestionCreate
 from typing import List
 
 
-def create_contest(db: Session, data: ContestCreate) -> Contest:
-    contest = Contest(title=data.title, description=data.description, bank_id=data.bank_id)
+def create_contest(db: Session, data: ContestCreate, created_by: str = None) -> Contest:
+    contest = Contest(title=data.title, description=data.description, bank_id=data.bank_id, created_by=created_by)
     db.add(contest)
     db.commit()
     db.refresh(contest)

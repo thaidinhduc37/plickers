@@ -31,7 +31,9 @@ export function usePresentationChannel(role = "sender") {
       const msg = queuedRef.current.shift();
       try {
         ch.postMessage(msg);
-      } catch (_) {}
+      } catch {
+        // Ignore errors when channel is closed
+      }
     }
   }, []);
 
@@ -64,7 +66,9 @@ export function usePresentationChannel(role = "sender") {
         window.removeEventListener("focus", onFocus);
         try {
           ch.postMessage({ type: "DISCONNECT" });
-        } catch (_) {}
+        } catch {
+          // Ignore errors when channel is closed
+        }
         ch.close();
         channelRef.current = null;
       };
@@ -89,7 +93,9 @@ export function usePresentationChannel(role = "sender") {
           setConnected(true);
           try {
             ch.postMessage({ type: "RECONNECT_ACK" });
-          } catch (_) {}
+          } catch {
+            // Ignore errors when channel is closed
+          }
         }
 
         if (type === "DISCONNECT") {
@@ -101,7 +107,9 @@ export function usePresentationChannel(role = "sender") {
       heartbeatRef.current = setInterval(() => {
         try {
           ch.postMessage({ type: "PING" });
-        } catch (_) {}
+        } catch {
+          // Ignore errors when channel is closed
+        }
         // Nếu chưa nhận pong sau PING_TIMEOUT → đánh dấu offline
         if (!pingTimeoutRef.current) {
           pingTimeoutRef.current = setTimeout(() => {
@@ -114,14 +122,18 @@ export function usePresentationChannel(role = "sender") {
       // Ping ngay lần đầu
       try {
         ch.postMessage({ type: "PING" });
-      } catch (_) {}
+      } catch {
+        // Ignore errors when channel is closed
+      }
 
       return () => {
         clearInterval(heartbeatRef.current);
         clearTimeout(pingTimeoutRef.current);
         try {
           ch.postMessage({ type: "DISCONNECT" });
-        } catch (_) {}
+        } catch {
+          // Ignore errors when channel is closed
+        }
         ch.close();
         channelRef.current = null;
       };
@@ -135,7 +147,9 @@ export function usePresentationChannel(role = "sender") {
     if (channelRef.current) {
       try {
         channelRef.current.postMessage(msg);
-      } catch (_) {}
+      } catch {
+        // Ignore errors when channel is closed
+      }
     } else {
       // Channel chưa sẵn sàng — queue lại
       queuedRef.current.push(msg);
@@ -158,7 +172,9 @@ export function usePresentationChannel(role = "sender") {
             type: "STATE_UPDATE",
             payload: lastPayloadRef.current,
           });
-        } catch (_) {}
+        } catch {
+          // Ignore errors when channel is closed
+        }
       }
     }, 1000);
     return win;

@@ -4,7 +4,10 @@ from jose import JWTError, jwt
 import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
 from app.core.config import settings
+from app.core.database import get_db
+from app.models.models import AdminUser
 
 bearer_scheme = HTTPBearer()
 
@@ -41,10 +44,22 @@ def decode_token(token: str) -> dict:
         )
 
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> str:
-    """Dependency — xác thực JWT cho các endpoint yêu cầu BTC đăng nhập."""
+def get_current_user(
+    db: Session = Depends(get_db),
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
+) -> AdminUser:
+    """Dependency — xác thực JWT cho các endpoint yêu cầu BTC đăng nhập.
+    
+    Returns AdminUser object instead of str username.
+    """
     payload = decode_token(credentials.credentials)
     username: str = payload.get("sub")
     if not username:
         raise HTTPException(status_code=401, detail="Token không hợp lệ")
-    return username
+    
+    # Query user from database and return AdminUser object
+    user = db.query(AdminUser).filter(AdminUser.username == username).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    
+    return user

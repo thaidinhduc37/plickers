@@ -3,17 +3,17 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.deps import get_current_user_or_auto
 from app.schemas.schemas import QuestionBankCreate, QuestionBankOut, QuestionCreate, QuestionOut
 from app.services import bank_service
 from app.models.models import Question
 
 router = APIRouter(prefix="/api/banks", tags=["QuestionBank"])
-auth = Depends(get_current_user)
+auth = Depends(get_current_user_or_auto)
 
 @router.post("/", response_model=QuestionBankOut)
-def create_bank(data: QuestionBankCreate, db: Session = Depends(get_db), _=auth):
-    return bank_service.create_bank(db, data)
+def create_bank(data: QuestionBankCreate, db: Session = Depends(get_db), user=auth):
+    return bank_service.create_bank(db, data, created_by=user.username)
 
 @router.get("", response_model=List[QuestionBankOut])
 @router.get("/", response_model=List[QuestionBankOut])
