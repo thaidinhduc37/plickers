@@ -5,9 +5,8 @@ import {
     LayoutDashboard, Scan, LogOut, Wifi, WifiOff, Camera, Menu, X
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import AccountModal from './AccountModal';
 import clsx from 'clsx';
-
-console.log('[SidebarLayout] Module loaded');
 
 const navItems = [
     { path: '/dashboard', icon: LayoutDashboard, label: 'Tổng quan', mobileHide: true },
@@ -19,11 +18,11 @@ const navItems = [
 ];
 
 export default function SidebarLayout({ children, onLogout }) {
-    console.log('[SidebarLayout] Rendering');
     const { contests, activeSession, wsConnected, cameraConnected } = useApp();
     const navigate = useNavigate();
     const location = useLocation();
     const [sidebarOpen, setSidebarOpen] = useState(false);
+    const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
 
     // Đóng sidebar khi chuyển route trên mobile
     useEffect(() => { setSidebarOpen(false); }, [location.pathname]);
@@ -32,8 +31,6 @@ export default function SidebarLayout({ children, onLogout }) {
     const liveContest = activeSession
         ? contests.find(c => c.id === activeSession.contest_id)
         : null;
-
-    console.log('[SidebarLayout] liveContest:', liveContest);
 
     return (
         <div className="flex h-screen bg-slate-100 overflow-hidden">
@@ -149,7 +146,10 @@ export default function SidebarLayout({ children, onLogout }) {
 
                 {/* ── Footer / User ── */}
                 <div className="p-3 border-t border-slate-100 shrink-0">
-                    <div className="flex items-center gap-3 px-2 py-1.5 rounded-xl hover:bg-slate-50 transition-colors group">
+                    <div 
+                        onClick={() => setIsAccountModalOpen(true)}
+                        className="flex items-center gap-3 px-2 py-1.5 rounded-xl hover:bg-slate-50 transition-colors group cursor-pointer"
+                    >
                         <div
                             className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0"
                             style={{ background: 'linear-gradient(135deg, #10509F, #1a6fd4)' }}
@@ -160,7 +160,10 @@ export default function SidebarLayout({ children, onLogout }) {
                         </div>
                         {onLogout && (
                             <button
-                                onClick={onLogout}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onLogout();
+                                }}
                                 title="Đăng xuất"
                                 className="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-50 hover:text-red-500 text-slate-300 transition-all"
                             >
@@ -170,6 +173,12 @@ export default function SidebarLayout({ children, onLogout }) {
                     </div>
                 </div>
             </aside>
+
+            {/* Account Info / Password Change Modal */}
+            <AccountModal 
+                isOpen={isAccountModalOpen} 
+                onClose={() => setIsAccountModalOpen(false)} 
+            />
 
             <main className="flex-1 overflow-hidden flex flex-col min-w-0">
                 {/* Mobile top bar */}

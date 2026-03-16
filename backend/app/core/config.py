@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "Admin@123")
     
     # Auto-login mode (True = dev mode, skip auth; False = require auth)
-    AUTO_LOGIN: bool = os.getenv("AUTO_LOGIN", "True").lower() in ("true", "1", "yes")
+    AUTO_LOGIN: bool = os.getenv("AUTO_LOGIN", "False").lower() in ("true", "1", "yes")
     
     # Database
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./rcv.db")

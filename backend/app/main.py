@@ -24,19 +24,12 @@ def _auto_migrate():
 
 try:
     _auto_migrate()
-except Exception as e:
-    print(f"[migrate] warning: {e}")
+except Exception:
+    pass
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("=" * 50)
-    print("RUNG CHUONG VANG API - Server Starting")
-    print("=" * 50)
-    print(f"Server Address  : {settings.SERVER_LAN_IP}:{settings.SERVER_PORT}")
-    print(f"Docs            : http://{settings.SERVER_LAN_IP}:{settings.SERVER_PORT}/docs")
-    print(f"WebSocket       : ws://{settings.SERVER_LAN_IP}:{settings.SERVER_PORT}/ws/contest/{{id}}")
-    print("=" * 50)
     yield
 
 
@@ -72,28 +65,19 @@ app.include_router(public_api.router, tags=["public"])
 # Global exception handler (sau routes để catch tất cả errors)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    error_msg = f"[ERROR] {request.method} {request.url.path}: {str(exc)}"
     traceback_str = traceback.format_exc()
     
-    # Log to console (use encode/decode to avoid UnicodeEncodeError on Windows)
-    try:
-        print(error_msg.encode('utf-8').decode('utf-8'))
-        print(traceback_str.encode('utf-8').decode('utf-8'))
-    except:
-        print(error_msg)
-        print(traceback_str)
-    
-    # Also log to file
+    # Log to file
     try:
         with open("error.log", "a") as f:
-            f.write(f"\n{error_msg}\n{traceback_str}\n")
+            f.write(f"\n[ERROR] {request.method} {request.url.path}: {str(exc)}\n{traceback_str}\n")
     except:
         pass
     
     return JSONResponse(
         status_code=500,
         content={
-            "detail": f"Internal Server Error: {str(exc)}",
+            "detail": "Internal Server Error",
             "type": type(exc).__name__
         }
     )

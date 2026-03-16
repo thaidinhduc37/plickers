@@ -8,14 +8,10 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { api, wsManager } from '../api/client';
 
-console.log('[AppContext] Module loaded');
-
 const AppContext = createContext(null);
 export const useApp = () => useContext(AppContext);
 
 export function AppProvider({ children }) {
-  console.log('[AppProvider] Rendering');
-
     const [banks, setBanks] = useState([]);
     const [contests, setContests] = useState([]);
     const [contestants, setContestants] = useState([]);
@@ -45,7 +41,6 @@ export function AppProvider({ children }) {
 
     const handleApiError = useCallback((e, fallback = 'Có lỗi xảy ra') => {
         const message = e?.message || e?.detail || fallback;
-        console.error('[API Error]', message, e);
         showToast('error', message);
     }, [showToast]);
 
@@ -284,6 +279,7 @@ export function AppProvider({ children }) {
     const fetchActiveSession = useCallback(async () => {
         try {
             const session = await api.getActiveSession();
+            console.log('[AppContext] fetchActiveSession returned:', session?.state ?? 'null', session?.session_id);
             setActiveSession(session);
             if (session) {
                 try {
@@ -309,6 +305,7 @@ export function AppProvider({ children }) {
         setLoading(true);
         try {
             const session = await api.startSession(contestId);
+            console.log('[AppContext] startSession created session:', session);
             await fetchActiveSession();
             await fetchContestants(contestId);
             setVotes({ A: 0, B: 0, C: 0, D: 0, total: 0 });
@@ -321,6 +318,26 @@ export function AppProvider({ children }) {
         } catch (e) { handleApiError(e, 'Không thể bắt đầu phiên thi'); return null; }
         finally { setLoading(false); }
     };
+
+    const setSessionState = useCallback((state) => {
+    setActiveSession(s => s ? { ...s, state } : s);
+}, []);
+
+    // FIX: Call backend API to transition session from waiting to scanning
+    const startScanning = useCallback(async () => {
+        try {
+            console.log("[DIAGNOSTIC] startScanning called - transitioning session to scanning state");
+            const res = await api.startScanning();
+            console.log("[DIAGNOSTIC] startScanning succeeded:", res);
+            // Refresh session state from backend to ensure consistency
+            await fetchActiveSession();
+            return res;
+        } catch (e) {
+            console.error("[DIAGNOSTIC] startScanning failed:", e);
+            handleApiError(e, 'Không thể bắt đầu quét');
+            throw e;
+        }
+    }, [handleApiError, fetchActiveSession]);
 
     // FIX #2: Filter eliminated trước khi gửi lên backend
     const submitScan = async (sessionId, results) => {
@@ -614,7 +631,7 @@ export function AppProvider({ children }) {
                     await fetchContestants(session.contest_id);
                     connectWebSocket(session.session_id);
                 }
-            } catch (e) { console.error('Init error:', e); }
+            } catch (e) { }
         };
 
         initApp();
@@ -728,10 +745,11 @@ export function AppProvider({ children }) {
         addContestants, removeContestant,
         addEvent: addContest,
         rescueContestants, // FIX #4 — dùng trong LiveView
-
+        setSessionState,
+        startScanning, // FIX: Call backend API to transition session state
         addClass, deleteClass, addStudentsToClass, removeStudentFromClass, setActiveClassId,
 
-        fetchActiveSession, startSession, submitScan, resetContestants,
+        fetchActiveSession, startSession, startScanning, submitScan, resetContestants,
         revealAnswer, nextQuestion, retryQuestion, skipQuestion, useBackupQuestion, endSession, clearResponses,
         connectWebSocket,
         downloadContestCards, downloadBlankCards,

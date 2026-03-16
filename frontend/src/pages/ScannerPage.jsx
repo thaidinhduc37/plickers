@@ -275,6 +275,13 @@ export default function ScannerPage() {
 
       // 2-frame confirm: detect() feed buffer, computeStableResults lọc 2 frame đồng ý
       if (session) {
+        // DIAGNOSTIC LOG: Log session state before attempting submit
+        if (session.state !== 'scanning') {
+          console.warn(
+            `[DIAGNOSTIC] ScannerPage: session.state = "${session.state}", expected "scanning". ` +
+            `Session: ${JSON.stringify({ session_id: session.session_id, state: session.state, current_question_index: session.current_question_index })}`
+          );
+        }
         const stable = detectorRef.current.computeStableResults(STABLE_MIN_VOTES);
         const batch = [];
 

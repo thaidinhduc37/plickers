@@ -254,3 +254,23 @@ async def use_backup_question(req: UseBackupRequest, db: Session = Depends(get_d
         })
 
     return data
+
+
+@router.post("/start-scanning")
+async def start_scanning(db: Session = Depends(get_db), _=auth):
+    """BTC bấm Bắt đầu thi → chuyển session từ waiting sang scanning."""
+    from app.models.models import Session as SessionModel, SessionState
+    # FIX: Also accept sessions already in scanning state (idempotent)
+    session = db.query(SessionModel).filter(
+        SessionModel.state.in_([SessionState.waiting, SessionState.scanning])
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Không có phiên thi đang hoạt động")
+    # Only transition if in waiting state
+    if session.state == SessionState.waiting:
+        session.state = SessionState.scanning
+        db.commit()
+        await ws_manager.broadcast(session.id, "session_scanning", {
+            "session_id": session.id,
+        })
+    return {"session_id": session.id, "state": "scanning"}

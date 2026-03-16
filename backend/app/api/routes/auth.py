@@ -124,6 +124,36 @@ async def get_current_user_info(
         auto_login=False
     )
 
+from app.schemas.schemas import ChangePasswordRequest
+
+@router.post("/change-password")
+async def change_password(
+    request: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Change current user's password.
+    """
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    token = credentials.credentials
+    user = get_current_user(token, db)
+    
+    from app.services.auth_service import update_password
+    success = update_password(db, user, request.old_password, request.new_password)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mật khẩu cũ không chính xác"
+        )
+    return {"message": "Đổi mật khẩu thành công"}
+
 
 @router.post("/logout")
 async def logout():

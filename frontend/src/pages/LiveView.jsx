@@ -383,7 +383,7 @@ export default function LiveView() {
         questionSets, events, session, contestants,
         startSession, endSession, nextQuestion, revealAnswer, clearResponses, simulateAnswer,
         cameraConnected, fetchActiveSession, fetchContestants, fetchBanks, fetchContests,
-        rescueContestants, useBackupQuestion, loading,
+        rescueContestants, useBackupQuestion, loading, setSessionState, startScanning,
     } = useApp();
     // ── BroadcastChannel ───────────────────────────────────────────────────────
     const { broadcast, openPresentation, connected: presenterConnected } = usePresentationChannel('sender');
@@ -452,6 +452,8 @@ export default function LiveView() {
         useBackupQuestion,
         broadcast,
         presenterConnected,
+        setSessionState,
+        startScanning, // FIX: Pass startScanning to useSessionPhase
     });
 
     if (!session) return (

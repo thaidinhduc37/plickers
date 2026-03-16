@@ -152,6 +152,15 @@ class ApiClient {
     }
   }
 
+  async changePassword(oldPassword, newPassword) {
+    const res = await this.post("/api/auth/change-password", {
+      old_password: oldPassword,
+      new_password: newPassword,
+    });
+    await this.assertOk(res);
+    return res.json();
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // QUESTION BANKS (NGÂN HÀNG CÂU HỎI)
   // ═══════════════════════════════════════════════════════════════════════════
@@ -451,10 +460,24 @@ class ApiClient {
    * @param {Array<{card_id: number, answer: string}>} results
    */
   async submitScan(sessionId, results) {
+    // DIAGNOSTIC LOG: Log the submit scan request
+    console.log(
+      `[DIAGNOSTIC] submitScan called: sessionId=${sessionId}, resultsCount=${results.length}`
+    );
     const res = await this.post("/api/scan/submit", {
       session_id: sessionId,
       results,
     });
+    // Log response or error
+    if (!res.ok) {
+      const errorBody = await res.json().catch(() => ({}));
+      console.error(
+        `[DIAGNOSTIC] submitScan failed: status=${res.status}, ` +
+        `body=${JSON.stringify(errorBody)}`
+      );
+    } else {
+      console.log(`[DIAGNOSTIC] submitScan succeeded: ${res.status}`);
+    }
     await this.assertOk(res);
     return res.json();
   }
@@ -524,6 +547,12 @@ class ApiClient {
     } catch {
       return {};
     }
+  }
+
+  async startScanning() {
+    const res = await this.post("/api/session/start-scanning");
+    await this.assertOk(res);
+    return res.json();
   }
 
   async publicRevealAnswer(sessionId) {

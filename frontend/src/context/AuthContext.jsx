@@ -8,20 +8,15 @@ import { useAuth } from '../hooks/useAuth';
 
 const AuthContext = createContext(null);
 
-console.log('[AuthContext] Module loaded');
-
 export function AuthProvider({ children }) {
-  console.log('[AuthProvider] Rendering');
   try {
     const auth = useAuth();
-    console.log('[AuthProvider] Auth state:', auth);
     return (
       <AuthContext.Provider value={auth}>
         {children}
       </AuthContext.Provider>
     );
   } catch (error) {
-    console.error('[AuthProvider] Error:', error);
     throw error;
   }
 }

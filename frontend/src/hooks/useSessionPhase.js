@@ -34,6 +34,8 @@ export function useSessionPhase({
   // BroadcastChannel
   broadcast,
   presenterConnected,
+  setSessionState,
+  startScanning, // FIX: API call to transition session state
 }) {
   const navigate = useNavigate();
   const { play: playAudio, stop: stopAudio, beep } = useAudio();
@@ -41,12 +43,21 @@ export function useSessionPhase({
   // ── Phase state ────────────────────────────────────────────────────────────
   // Derive initial phase from session state to handle returning to LiveView mid-session
   const derivePhase = (s) => {
+    console.log(
+      "[useSessionPhase] derivePhase called with session:",
+      s?.state ?? "null",
+    );
     if (!s) return "lobby";
     if (s.state === "revealed") return "revealed";
     if (s.state === "scanning") return "scanning";
+    if (s.state === "waiting") return "lobby"; // Handle waiting state
     return "question";
   };
-  const [phase, setPhase] = useState(() => derivePhase(session));
+  const [phase, setPhase] = useState(() => {
+    const initial = derivePhase(session);
+    console.log("[useSessionPhase] Initial phase:", initial);
+    return initial;
+  });
   const [timerSel, setTimerSel] = useState(15);
   const [timeLeft, setTimeLeft] = useState(15);
   const [timerRunning, setTimerRunning] = useState(false);
@@ -72,6 +83,12 @@ export function useSessionPhase({
       initializedRef.current = true;
       sessionStartedRef.current = true;
       const p = derivePhase(session);
+      console.log(
+        "[useSessionPhase] Restoring phase from session:",
+        session.state,
+        "->",
+        p,
+      );
       setPhase(p);
       phaseRef.current = p;
       prevQIdx.current = session.questionIndex ?? 0;
@@ -289,6 +306,12 @@ export function useSessionPhase({
           stopAudio();
           beep(600, 400);
 
+          // FIX: Call backend API to transition session state
+          startScanning?.().catch((e) => {
+            console.error("[DIAGNOSTIC] Timer tick: startScanning() failed:", e);
+          });
+          setSessionState?.("scanning");
+
           // Gửi tín hiệu chuyển phase sang màn chiếu ngay lập tức
           broadcastState({ phase: "scanning", timeLeft: 0 });
 
@@ -299,7 +322,7 @@ export function useSessionPhase({
       });
     }, 1000);
     return () => clearInterval(intervalRef.current);
-  }, [timerRunning, broadcastState]); // eslint-disable-line
+  }, [timerRunning, broadcastState, startScanning, setSessionState]); // eslint-disable-line
 
   // ── Broadcast timeLeft realtime khi countdown ─────────────────────────────
   useEffect(() => {
@@ -317,11 +340,19 @@ export function useSessionPhase({
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
-  const handleStartFromLobby = useCallback(() => {
+  const handleStartFromLobby = useCallback(async () => {
     sessionStartedRef.current = true;
     setPhase("question");
+    // FIX: Call backend API to transition session state from waiting to scanning
+    try {
+      await startScanning?.();
+      console.log("[DIAGNOSTIC] handleStartFromLobby: startScanning() succeeded");
+    } catch (e) {
+      console.error("[DIAGNOSTIC] handleStartFromLobby: startScanning() failed:", e);
+    }
+    setSessionState?.("scanning");
     broadcastState({ phase: "question" });
-  }, [broadcastState]);
+  }, [broadcastState, setSessionState, startScanning, session]);
 
   const startTimer = useCallback(() => {
     setTimeLeft(timerSel);
@@ -338,18 +369,26 @@ export function useSessionPhase({
     });
   }, [stopAudio]);
 
-  const skipToScan = useCallback(() => {
+  const skipToScan = useCallback(async () => {
     clearInterval(intervalRef.current);
     setTimerRunning(false);
     setTimeLeft(0);
+    // FIX: Call backend API to transition session state
+    try {
+      await startScanning?.();
+      console.log("[DIAGNOSTIC] skipToScan: startScanning() succeeded");
+    } catch (e) {
+      console.error("[DIAGNOSTIC] skipToScan: startScanning() failed:", e);
+    }
     setPhase("scanning");
+    setSessionState?.("scanning");
     broadcastState({ phase: "scanning", timeLeft: 0 });
     stopAudio();
     document.querySelectorAll("audio").forEach((a) => {
       a.pause();
       a.currentTime = 0;
     });
-  }, [broadcastState, stopAudio]);
+  }, [broadcastState, stopAudio, startScanning, setSessionState]);
 
   const handleReveal = useCallback(async () => {
     await revealAnswer();

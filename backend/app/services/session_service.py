@@ -137,7 +137,7 @@ def start_session(db: DBSession, contest_id: int) -> Session:
 
     session = Session(
         contest_id=contest_id,
-        state=SessionState.scanning,
+        state=SessionState.waiting,
         current_question_index=0,
     )
     db.add(session)
@@ -201,6 +201,14 @@ def submit_scan_results(
     if not session:
         raise HTTPException(status_code=404, detail="Session không tồn tại")
     if session.state != SessionState.scanning:
+        # DIAGNOSTIC LOG: Log session state when rejection occurs
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            f"[DIAGNOSTIC] Submit scan rejected: session_id={session_id}, "
+            f"current_state={session.state}, expected_state=scanning, "
+            f"contest_id={session.contest_id}, current_question_index={session.current_question_index}"
+        )
         raise HTTPException(
             status_code=400,
             detail=f"Session đang ở trạng thái '{session.state}', không nhận đáp án"
